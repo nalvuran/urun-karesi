@@ -7,21 +7,23 @@
 Her şey tarayıcıda çalışır: video hiçbir sunucuya yüklenmez. Bu yüzden GitHub Pages'te ücretsiz yayınlanabilir; telefondan da kullanılır.
 
 ## Nasıl kullanılır
-1. **Bir kez:** "⚙ Yapay zekâ ayarları"na Claude API anahtarını gir ([Claude Console](https://platform.claude.com/settings/keys) → API Keys). Anahtar sadece tarayıcında saklanır.
-2. **Video dosyasını seç**, **transkripti yapıştır** (YouTube "Transkripti göster" kopyası, `0:12 metin` satırları, `.srt` veya `.vtt`).
-3. **✨ Tarifi yapay zekâyla yaz**'a bas. Claude transkripti İngilizce, US terimli bir tarife çevirir:
-   başlık, giriş, zorluk, malzemeler, araçlar, ölçü tablosu, kısaltmalar, notlar, bölümlere ayrılmış adımlar,
-   her fotoğrafın videodaki anı ve Etsy ilan metni (başlık, açıklama, 13 etiket).
-4. **Sarı işaretli adımlara bak.** Yapay zekâ emin olmadığı yerlere `[CHECK: ...]` notu koyar. Bu notlar PDF'e yazılmaz ama içerik mutlaka kontrol edilmeli.
-5. **Fotoğrafları çıkar**'a bas. ⚠ işaretli fotoğraflara dokunup düzelt: zamanı değiştir, yakın kareleri tara veya "Elle düzelt" ile kalan el parçasını sil.
-6. **PDF tarif** bölümündeki alanları gözden geçir, tasarımcı adını yaz, kapak fotoğrafını seç ve **PDF olarak kaydet**'e bas.
-7. **Etsy ilanı** bölümündeki metinleri kopyala.
-8. **💾 Projeyi kaydet** ile yapay zekânın yazdığı metni saklarsın; sonra açınca tekrar ücret ödemeden devam edersin. (Fotoğraflar dosyaya girmez; aynı videoyu seçip yeniden çıkarırsın.)
+1. **Video dosyasını seç**, **transkripti yapıştır** (YouTube "Transkripti göster" kopyası, `0:12 metin` satırları, `.srt` veya `.vtt`).
+2. **📋 Claude için komutu kopyala**'ya bas.
+3. **💬 Claude'u yeni sekmede aç**; yeni bir sohbete yapıştırıp gönder. Claude tarifi İngilizce, US terimleriyle ve özel bir biçimde (JSON) yazar.
+4. Yanıt bitince kod bloğunun sağ üstündeki **Copy**'ye bas, uygulamada **📥 Claude'un yanıtını yapıştır** → **Tarifi uygula**.
+   Başlık, giriş, zorluk, malzemeler, araçlar, ölçü tablosu, kısaltmalar, notlar, bölümlü adımlar, fotoğraf anları ve Etsy ilan metni kendiliğinden yerleşir.
+5. **Sarı işaretli adımlara bak.** Claude emin olmadığı yerlere `[CHECK: ...]` notu koyar. Bu notlar PDF'e yazılmaz ama içerik mutlaka kontrol edilmeli.
+6. **Fotoğrafları çıkar**'a bas. ⚠ işaretli fotoğraflara dokunup düzelt: zamanı değiştir, yakın kareleri tara veya "Elle düzelt" ile kalan el parçasını sil.
+7. **PDF tarif** bölümündeki alanları gözden geçir, tasarımcı adını yaz, kapak fotoğrafını seç ve **PDF olarak kaydet**'e bas.
+8. **Etsy ilanı** bölümündeki metinleri kopyala.
+9. **💾 Projeyi kaydet** ile metni sakla; sonra açınca kaldığın yerden devam edersin. (Fotoğraflar dosyaya girmez; aynı videoyu seçip yeniden çıkarırsın.)
 
-Yapay zekâ olmadan da çalışır: **"Yapay zekâsız: satır satır"** transkriptin her satırını bir adım yapar (metni elle düzenlersin).
+**Diğer yollar** (uygulamada "Diğer yollar" altında):
+- **API ile otomatik yaz:** Claude API anahtarı girersen kopyala-yapıştır gerekmez (kullanım başına ücretli).
+- **Yapay zekâsız: satır satır:** transkriptin her satırı bir adım olur; metni elle düzenlersin.
 
 ### Maliyet
-Claude API kullanım başına ücretlidir. 20 dakikalık bir video için Sonnet 5.5 ile yaklaşık 0,10 $, Opus 5.5 ile yaklaşık iki katı. Güncel fiyatlar: [Claude API Pricing](https://platform.claude.com/docs/en/about-claude/pricing).
+Kopyala-yapıştır yolu ek ücret gerektirmez; claude.ai hesabının kullanım limitleri geçerlidir. API yolu kullanım başına ücretlidir: 20 dakikalık bir video için Sonnet 5.5 ile yaklaşık 0,10 $, Opus 5.5 ile yaklaşık iki katı. Güncel fiyatlar: [Claude API Pricing](https://platform.claude.com/docs/en/about-claude/pricing).
 
 ### Yüzlerce video için öneri
 - İlk 3–5 tarifi örgü bilen birine okut; sayılar ve teknik doğru mu, gör. Sonra seri üretime geç.

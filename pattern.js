@@ -216,3 +216,63 @@ export const textToAbbr = (t) => linesToList(t).map((l) => {
   const i = l.search(/\s*[=:–-]\s*/);
   return i > 0 ? { abbr: l.slice(0, i).trim(), meaning: l.slice(i).replace(/^\s*[=:–-]\s*/, "").trim() } : { abbr: l, meaning: "" };
 });
+
+// ---- API'siz yol: claude.ai sohbetine yapıştırılacak komut ve gelen yanıtın okunması ----
+const TEMPLATE = {
+  title: "Crochet Pumpkins in 3 Sizes",
+  subtitle: "Short cover tagline",
+  description: "2–4 sentence introduction",
+  skill_level: "Beginner | Easy | Intermediate | Experienced",
+  materials: ["..."],
+  tools: ["..."],
+  finished_sizes: { headers: ["Size", "..."], rows: [["S", "..."]] },
+  abbreviations: [{ abbr: "ch", meaning: "chain" }],
+  notes: ["..."],
+  sections: [{
+    heading: "Pumpkin Body",
+    steps: [{ text: "Row 1: ... (24 hdc)", source_time: "1:38", photo: true, photo_time: "2:00" }],
+  }],
+  etsy: { listing_title: "...", description: "...", tags: ["13 tags, max 20 chars each"] },
+};
+
+export function buildChatPrompt({ transcript, videoName, duration }) {
+  const header = [
+    videoName ? `Video file: ${videoName}` : "",
+    duration ? `Video length: ${formatTime(Math.floor(duration))}` : "",
+  ].filter(Boolean).join("\n");
+  return `${SYSTEM}
+
+OUTPUT FORMAT
+Reply with ONE JSON object only, inside a single \`\`\`json code block, with no other text before or after it. Do not create an artifact or file. Use exactly these keys (photo_time only when photo is true):
+${JSON.stringify(TEMPLATE, null, 2)}
+
+${header}
+
+Transcript (Turkish, timestamped):
+
+${transcript.trim()}`;
+}
+
+/** claude.ai'den kopyalanan yanıttan JSON'u çıkarır (kod bloğu, önünde/arkasında metin olsa bile). */
+export function parseChatReply(text) {
+  let s = String(text).trim();
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) s = fence[1];
+  const a = s.indexOf("{"), b = s.lastIndexOf("}");
+  if (a >= 0 && b <= a) throw new Error("Yanıt yarıda kesilmiş görünüyor. Claude'a \"devam et\" yazın, sonra yanıtın tamamını kopyalayın.");
+  if (a < 0) throw new Error("Yapıştırılan metinde tarif bulunamadı. Claude'un yanıtındaki kod bloğunu baştan sona kopyalayın.");
+  s = s.slice(a, b + 1);
+  let obj;
+  try {
+    obj = JSON.parse(s);
+  } catch {
+    try {
+      // Yaygın küçük hatalar: sondaki virgüller, akıllı tırnaklar
+      obj = JSON.parse(s.replace(/,\s*([}\]])/g, "$1").replace(/[“”]/g, '"'));
+    } catch {
+      throw new Error("Yanıt eksik ya da bozuk görünüyor. Yanıt yarıda kesildiyse Claude'a \"devam et\" yazın ve tamamını kopyalayın.");
+    }
+  }
+  if (!obj || !Array.isArray(obj.sections)) throw new Error("Yanıtta adımlar (sections) yok. Komutu yeniden deneyin.");
+  return normalize(obj);
+}

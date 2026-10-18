@@ -1,7 +1,7 @@
 import { compose, parseTime, formatTime } from "./processing.js";
 import { parseTranscript, classify, wantsPhoto } from "./transcript.js";
 import {
-  MODELS, writePattern, patternToSteps, linesToList, sizesToText, textToSizes, abbrToText, textToAbbr,
+  MODELS, writePattern, patternToSteps, buildChatPrompt, parseChatReply, linesToList, sizesToText, textToSizes, abbrToText, textToAbbr,
 } from "./pattern.js";
 
 // ---- Dış kaynaklar (hepsi tarayıcıda çalışır) ----
@@ -32,6 +32,7 @@ const els = Object.fromEntries([
   "project-save", "project-open", "ai-card", "ai-status", "api-key", "ai-model", "api-remember", "ai-write", "ai-cancel",
   "pdf-subtitle", "pdf-skill", "pdf-materials", "pdf-tools", "pdf-sizes", "pdf-abbr", "pdf-notes", "pdf-copyright",
   "etsy-card", "etsy-title", "etsy-title-len", "etsy-desc", "etsy-tags",
+  "chat-copy", "chat-paste-open", "chat-panel", "chat-reply", "chat-apply", "chat-close",
 ].map((id) => [id.replace(/-(\w)/g, (_, c) => c.toUpperCase()), $(id)]));
 
 // ---- Durum ----
@@ -338,7 +339,6 @@ function saveAiSettings() {
 }
 for (const el of [els.apiKey, els.aiModel, els.apiRemember]) el.addEventListener("change", saveAiSettings);
 saveAiSettings();
-if (!els.apiKey.value) els.aiCard.open = true;
 
 let aiAbort = null;
 els.aiWrite.onclick = async () => {
@@ -373,6 +373,52 @@ els.aiWrite.onclick = async () => {
   }
 };
 els.aiCancel.onclick = () => aiAbort?.abort();
+
+// ---- API'siz yol: claude.ai ile kopyala-yapıştır ----
+els.chatCopy.onclick = async () => {
+  if (!parseTranscript(els.transcript.value).length) return setMsg("Önce transkripti yapıştırın (satırlar \"0:12\" gibi zamanlarla başlamalı).", true);
+  const prompt = buildChatPrompt({ transcript: els.transcript.value, videoName: els.videoName.textContent, duration: video.duration || 0 });
+  try {
+    await navigator.clipboard.writeText(prompt);
+  } catch {
+    // Pano izni yoksa metni yanıt kutusuna koyup seçtir
+    els.chatPanel.hidden = false;
+    els.chatReply.value = prompt;
+    els.chatReply.select();
+    return setMsg("Otomatik kopyalanamadı: kutudaki metni seçip kopyalayın, sonra kutuyu temizleyip Claude'un yanıtını yapıştırın.", true);
+  }
+  const old = els.chatCopy.textContent;
+  els.chatCopy.textContent = "✓ Kopyalandı";
+  setTimeout(() => (els.chatCopy.textContent = old), 2000);
+  setMsg("Komut kopyalandı. Claude'da yeni bir sohbet açıp yapıştırın ve gönderin. Yanıt bitince 3. adıma geçin." +
+    (video.duration ? "" : " (Fotoğraf zamanlarının doğru olması için videoyu da seçmeniz iyi olur.)"));
+};
+els.chatPasteOpen.onclick = async () => {
+  els.chatPanel.hidden = false;
+  try {
+    const t = await navigator.clipboard.readText();
+    if (/"sections"\s*:/.test(t)) els.chatReply.value = t;
+  } catch { /* izin yoksa kullanıcı kendisi yapıştırır */ }
+  els.chatReply.focus();
+};
+els.chatClose.onclick = () => { els.chatPanel.hidden = true; };
+els.chatApply.onclick = () => {
+  try {
+    const p = parseChatReply(els.chatReply.value);
+    if (steps.length && !confirm("Mevcut adım listesi bu tarifle değiştirilsin mi?")) return;
+    applyPattern(p);
+    els.chatPanel.hidden = true;
+    els.chatReply.value = "";
+    const n = steps.filter((s) => s.photo).length;
+    const checks = steps.filter((s) => /\[CHECK/i.test(s.text)).length;
+    setMsg(`Tarif uygulandı: ${p.sections.length} bölüm, ${steps.length} adım, ${n} fotoğraf anı.` +
+      (checks ? ` ${checks} adımda [CHECK] notu var; bunları mutlaka kontrol edin.` : "") +
+      (video.duration ? "" : " Fotoğraflar için videoyu seçin."));
+    els.stepsCard.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    setMsg(e.message, true);
+  }
+};
 
 const DEFAULT_COPYRIGHT = (author) =>
   `© ${new Date().getFullYear()} ${author || "[Your shop name]"}. All rights reserved. This pattern is for personal use only. ` +

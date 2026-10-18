@@ -20,7 +20,7 @@
 
   <!-- Yapay zekâ ayarları -->
   <details class="card ai-card" id="ai-card">
-    <summary><b>⚙ Yapay zekâ ayarları</b> <span id="ai-status" class="muted small"></span></summary>
+    <summary><b>⚙ API ayarları</b> <span class="muted small">(isteğe bağlı, otomatik mod için)</span> <span id="ai-status" class="muted small"></span></summary>
     <p class="muted small">Tarif metnini Claude yazar. Bunun için bir Claude API anahtarı gerekir:
       <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">Claude Console</a> → API Keys.
       Anahtar sadece bu tarayıcıda saklanır, hiçbir yere yüklenmez ve GitHub'daki koda girmez.</p>
@@ -50,11 +50,28 @@
         <label class="ghost-btn small-btn">Dosyadan yükle<input type="file" id="tfile" accept=".txt,.srt,.vtt,text/plain" hidden></label>
       </div>
       <textarea id="transcript" rows="6" placeholder="0:00&#10;Merhaba arkadaşlar…&#10;1:07&#10;26 zincir yaparak başlayalım."></textarea>
+      <p class="label tarif-title">İngilizce tarifi Claude'a yazdırın</p>
       <div class="actions">
-        <button id="ai-write" class="primary" type="button">✨ Tarifi yapay zekâyla yaz (İngilizce)</button>
-        <button id="parse" class="ghost" type="button">Yapay zekâsız: satır satır</button>
-        <button id="ai-cancel" class="ghost" type="button" hidden>Durdur</button>
+        <button id="chat-copy" class="primary" type="button">📋 1. Claude için komutu kopyala</button>
+        <a class="btn-link secondary" href="https://claude.ai/new" target="_blank" rel="noopener">💬 2. Claude'u yeni sekmede aç</a>
+        <button id="chat-paste-open" class="primary" type="button">📥 3. Claude'un yanıtını yapıştır</button>
       </div>
+      <div id="chat-panel" class="chat-panel" hidden>
+        <p class="muted small">Claude'da yeni bir sohbete komutu yapıştırıp gönderin. Yanıt bitince kod bloğunun sağ üstündeki <b>Copy / Kopyala</b> düğmesine basın ve buraya yapıştırın.</p>
+        <textarea id="chat-reply" rows="6" placeholder='```json&#10;{ "title": "...", ... }&#10;```'></textarea>
+        <div class="actions">
+          <button id="chat-apply" class="primary" type="button">Tarifi uygula</button>
+          <button id="chat-close" class="ghost" type="button">Vazgeç</button>
+        </div>
+      </div>
+      <details class="other-ways">
+        <summary class="muted small">Diğer yollar</summary>
+        <div class="actions">
+          <button id="ai-write" class="ghost" type="button">✨ API ile otomatik yaz (anahtar gerekir)</button>
+          <button id="parse" class="ghost" type="button">Yapay zekâsız: satır satır</button>
+          <button id="ai-cancel" class="ghost" type="button" hidden>Durdur</button>
+        </div>
+      </details>
     </div>
     <p id="msg" class="msg" role="status"></p>
   </section>

@@ -217,3 +217,13 @@ textarea, select, .field input { font: inherit; color: var(--text); background: 
   .b-enjoy { font: 600 13pt system-ui, sans-serif; color: #c4552d; }
   .b-copy { font-size: 8.5pt; color: #777; margin-top: 6mm; }
 }
+
+/* ---------- API'siz (sohbet) yolu ---------- */
+.tarif-title { margin: 16px 0 0; }
+.btn-link { display: inline-flex; align-items: center; border-radius: 12px; padding: 11px 16px; font-weight: 600;
+  text-decoration: none; }
+.btn-link.secondary { background: var(--accent-soft); color: var(--accent); }
+.chat-panel { margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--field); }
+.chat-panel textarea { width: 100%; font: .85rem/1.4 ui-monospace, Menlo, monospace; resize: vertical; background: var(--card); }
+.other-ways { margin-top: 10px; }
+.other-ways summary { cursor: pointer; }
