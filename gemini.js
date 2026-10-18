@@ -24,35 +24,42 @@ const KEEP_ITEM =
   "number of rows, ribs or segments, and every part (stems, leaves, details). Do not add, remove or rearrange parts. " +
   "Do not invent stitches.";
 
+const SHARPEN =
+  "Make the existing stitches crisper and more clearly defined and bring out the yarn texture (clarity and sharpening only). " +
+  "Do NOT redraw, add or remove any stitches.";
+const descLine = (d) => (d ? `\nWhat the photo shows: ${d}\nIf this description conflicts with the photo in any way, follow the photo.` : "");
+
 const QUALITY = "Photorealistic, sharp focus on the item, high resolution, same framing and aspect ratio as the original photo.";
 
-/** @param {{type:"result"|"technique", text:string, hands:string, title?:string}} o */
+/** @param {{type:"result"|"technique", text:string, hands:string, title?:string, desc?:string}} o */
 export function buildGeminiPrompt(o) {
   const ctx = o.title ? `This photo is from a pattern for "${o.title}".` : "This photo is from a crochet/knitting pattern.";
   const step = o.text ? ` It illustrates this step: "${o.text.replace(/\s*\[CHECK:[^\]]*\]/gi, "").trim()}"` : "";
   if (o.type === "technique") {
     const hands = o.hands === "keep" || o.hands === "remove" ? HANDS_KEEP : handsText(o.hands);
     return [
-      `Edit this photo. ${ctx}${step}`,
+      `Edit this photo. ${ctx}${step}${descLine(o.desc)}`,
       "",
       "It is a TECHNIQUE photo: it teaches the buyer how the hands, yarn and hook move, so the technique must stay 100% accurate.",
       `- ${hands}`,
       "- While the hands themselves change, keep the same finger positions, the same path of the yarn over and between the fingers, " +
         "the same hook position and angle, and the exact place where the hook enters the stitch.",
       `- ${KEEP_ITEM}`,
+      `- ${SHARPEN}`,
       "- Simplify and soften the background (plain, light, uncluttered) and make the lighting soft, bright and even.",
       `- ${QUALITY}`,
     ].join("\n");
   }
   const hands = o.hands === "keep" ? HANDS_KEEP : o.hands === "remove" ? HANDS_REMOVE : handsText(o.hands);
   return [
-    `Edit this photo. ${ctx}${step}`,
+    `Edit this photo. ${ctx}${step}${descLine(o.desc)}`,
     "",
     "It is a RESULT photo that shows how the work looks at this stage.",
     "- Remove clutter (yarn balls, scissors, other objects) and place the item on a clean, seamless, light off-white background " +
       "with soft, even studio light and a gentle natural shadow.",
     `- ${hands}`,
     `- ${KEEP_ITEM}`,
+    `- ${SHARPEN}`,
     `- ${QUALITY}`,
   ].join("\n");
 }
@@ -65,6 +72,7 @@ export function buildCoverPrompt({ title }) {
     "- Show the finished item(s) on a clean, seamless, light off-white background with soft, warm, even studio light and gentle natural shadows.",
     "- Keep the items' arrangement close to the original; make the composition balanced and attractive for an Etsy listing.",
     `- ${KEEP_ITEM}`,
+    `- ${SHARPEN}`,
     "- Photorealistic, sharp, high resolution, landscape 4:3 framing with a little space around the items.",
   ].join("\n");
 }

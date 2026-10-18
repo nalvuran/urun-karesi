@@ -1,15 +1,10 @@
 :root {
-  --bg: #f7f4ef; --card: #ffffff; --text: #23201c; --muted: #6f685f;
-  --border: #e6dfd4; --accent: #c4552d; --accent-text: #fff; --accent-soft: #f6e1d6;
-  --err: #b3261e; --ok: #2e7d32; --field: #fbf9f6;
+  color-scheme: light;
+  --bg: #ffffff; --card: #ffffff; --text: #23201c; --muted: #6f685f;
+  --border: #e6e3df; --accent: #c4552d; --accent-text: #fff; --accent-soft: #f8e6dc;
+  --err: #b3261e; --ok: #2e7d32; --field: #f7f7f6;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #171513; --card: #221f1c; --text: #f2ede6; --muted: #a79f94;
-    --border: #3a352f; --accent: #e07048; --accent-soft: #3d2a21;
-    --err: #ff8a80; --ok: #81c784; --field: #1b1916;
-  }
-}
+
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
@@ -234,7 +229,7 @@ textarea, select, .field input { font: inherit; color: var(--text); background: 
 .ptype { padding: 2px 7px; font-size: .72rem; border-radius: 20px; font-weight: 600; border: 1px solid var(--border); background: var(--field); color: var(--muted); }
 .ptype.technique { background: #e7eefb; color: #2f5bb7; border-color: #c7d6f3; }
 .ptype.result { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
-@media (prefers-color-scheme: dark) { .ptype.technique { background: #1e2a44; color: #9bb8f0; border-color: #2c3c5e; } }
+
 .step .pic .badge { position: absolute; left: 3px; bottom: 3px; font-size: .62rem; font-weight: 700; padding: 0 4px; border-radius: 5px; }
 .badge.gem { background: #2e7d32; color: #fff; }
 .badge.raw { background: rgba(0,0,0,.55); color: #fff; }

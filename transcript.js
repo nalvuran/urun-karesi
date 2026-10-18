@@ -1,5 +1,5 @@
 // Transkript okuma: YouTube "transkripti göster" kopyası, "0:12 metin" satırları, SRT ve VTT.
-import { parseTime } from "./processing.js?v=20261018e";
+import { parseTime } from "./processing.js?v=20261018f";
 
 const TS_ONLY = /^\s*\d{1,2}(?::\d{2}){1,2}\s*$/;
 const TS_LEAD = /^\s*(\d{1,2}(?::\d{2}){1,2})\s+(.+)$/;

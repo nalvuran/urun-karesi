@@ -1,10 +1,10 @@
-import { parseTime, formatTime, autoLevels } from "./processing.js?v=20261018e";
-import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261018e";
+import { parseTime, formatTime, autoLevels } from "./processing.js?v=20261018f";
+import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261018f";
 import {
   MODELS, writePattern, patternToSteps, buildChatPrompt, parseChatReply,
   linesToList, sizesToText, textToSizes, abbrToText, textToAbbr,
-} from "./pattern.js?v=20261018e";
-import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName } from "./gemini.js?v=20261018e";
+} from "./pattern.js?v=20261018f";
+import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName } from "./gemini.js?v=20261018f";
 
 const JSZIP_URL = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
 const FRAME_MAX = 2400; // Ham karenin en fazla uzun kenarı (piksel)
@@ -695,7 +695,7 @@ function renderGem(s) {
 }
 
 function geminiPromptFor(s) {
-  return buildGeminiPrompt({ type: s.photoType, text: s.text, hands: els.hands.value, title: els.pdfTitle.value.trim() });
+  return buildGeminiPrompt({ type: s.photoType, text: s.text, desc: s.photoDesc, hands: els.hands.value, title: els.pdfTitle.value.trim() });
 }
 
 els.copyPrompt.onclick = async () => {
@@ -965,8 +965,8 @@ els.projectSave.onclick = () => {
     hands: els.hands.value,
     fields: Object.fromEntries(FIELD_KEYS.map((k) => [k, els[k].value])),
     cover: { t: cover.t, crop: cover.crop },
-    steps: steps.map(({ section, text, kind, start, end, include, photo, photoType, customT, crop, fileNo }) =>
-      ({ section, text, kind, start, end, include, photo, photoType, customT, crop, fileNo })),
+    steps: steps.map(({ section, text, kind, start, end, include, photo, photoType, photoDesc, customT, crop, fileNo }) =>
+      ({ section, text, kind, start, end, include, photo, photoType, photoDesc, customT, crop, fileNo })),
   };
   const name = (els.pdfTitle.value.trim() || els.videoName.textContent || "proje").replace(/[\\/:*?"<>|]+/g, "").slice(0, 80);
   saveBlob(new Blob([JSON.stringify(project, null, 2)], { type: "application/json" }), `${name}.json`);
