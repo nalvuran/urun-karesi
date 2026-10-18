@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ürün Karesi</title>
+<meta name="description" content="Örgü videosu ve transkriptinden adım adım ürün fotoğrafları çıkar, elleri sil, PDF tarif kitapçığı hazırla.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1><span class="logo" aria-hidden="true"></span>Ürün Karesi</h1>
+    <p class="sub">Video + transkript → İngilizce tarif, adım fotoğrafları ve satışa hazır PDF.</p>
+    <div class="header-actions">
+      <button id="project-save" class="ghost small-btn" type="button">💾 Projeyi kaydet</button>
+      <label class="ghost-btn small-btn">📂 Proje aç<input type="file" id="project-open" accept=".json,application/json" hidden></label>
+    </div>
+  </header>
+
+  <!-- Yapay zekâ ayarları -->
+  <details class="card ai-card" id="ai-card">
+    <summary><b>⚙ Yapay zekâ ayarları</b> <span id="ai-status" class="muted small"></span></summary>
+    <p class="muted small">Tarif metnini Claude yazar. Bunun için bir Claude API anahtarı gerekir:
+      <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">Claude Console</a> → API Keys.
+      Anahtar sadece bu tarayıcıda saklanır, hiçbir yere yüklenmez ve GitHub'daki koda girmez.</p>
+    <div class="pdf-grid">
+      <label class="field"><span>API anahtarı</span><input id="api-key" type="password" autocomplete="off" placeholder="sk-ant-..."></label>
+      <label class="field"><span>Model</span><select id="ai-model"></select></label>
+      <label class="check wide"><input id="api-remember" type="checkbox" checked> Anahtarı bu tarayıcıda hatırla</label>
+    </div>
+    <p class="muted small">Tahmini maliyet: 20 dakikalık bir video için Sonnet ile yaklaşık 0,10 $.</p>
+  </details>
+
+  <!-- 1. Video ve transkript -->
+  <section class="card">
+    <h2><span class="num">1</span>Video ve transkript</h2>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept="video/*" hidden>
+      <span class="drop-icon" aria-hidden="true">🎬</span>
+      <span><strong>Video dosyası seç</strong> veya buraya sürükle</span>
+      <small>Video hiçbir yere yüklenmez, her şey bu cihazda işlenir.</small>
+    </label>
+    <video id="video" playsinline muted controls preload="auto" hidden></video>
+    <p id="video-name" class="muted small"></p>
+
+    <div class="transcript-box">
+      <div class="row-between">
+        <label for="transcript" class="label">Transkript <span class="muted small">(zaman bilgili: YouTube kopyası, .srt veya .vtt)</span></label>
+        <label class="ghost-btn small-btn">Dosyadan yükle<input type="file" id="tfile" accept=".txt,.srt,.vtt,text/plain" hidden></label>
+      </div>
+      <textarea id="transcript" rows="6" placeholder="0:00&#10;Merhaba arkadaşlar…&#10;1:07&#10;26 zincir yaparak başlayalım."></textarea>
+      <div class="actions">
+        <button id="ai-write" class="primary" type="button">✨ Tarifi yapay zekâyla yaz (İngilizce)</button>
+        <button id="parse" class="ghost" type="button">Yapay zekâsız: satır satır</button>
+        <button id="ai-cancel" class="ghost" type="button" hidden>Durdur</button>
+      </div>
+    </div>
+    <p id="msg" class="msg" role="status"></p>
+  </section>
+
+  <!-- 2. Adımlar -->
+  <section class="card" id="steps-card" hidden>
+    <div class="row-between">
+      <h2><span class="num">2</span>Adımlar</h2>
+      <span id="steps-count" class="muted small"></span>
+    </div>
+    <p class="muted small help">☑ = PDF'e girer · 📷 = fotoğrafı çıkarılır · Zamana dokununca video oraya gider · Fotoğrafa dokununca düzenlenir · ⤒ üstteki adımla birleştirir.</p>
+    <div class="toolbar">
+      <label class="inline">Kare alınacak yer
+        <select id="frame-at">
+          <option value="end" selected>Cümlenin sonu (önerilen)</option>
+          <option value="mid">Cümlenin ortası</option>
+          <option value="start">Cümlenin başı</option>
+        </select>
+      </label>
+      <button id="add-step" class="ghost small-btn" type="button">+ Videodaki andan adım ekle</button>
+      <button id="photo-none" class="ghost small-btn" type="button">📷 Hiçbiri</button>
+      <button id="photo-auto" class="ghost small-btn" type="button">📷 Otomatik seç</button>
+    </div>
+    <ol id="steps" class="steps"></ol>
+    <div class="actions sticky-actions">
+      <button id="extract" class="primary" type="button">Fotoğrafları çıkar</button>
+      <button id="extract-all" class="secondary" type="button">Hepsini yeniden çıkar</button>
+      <button id="cancel" class="ghost" type="button" hidden>Durdur</button>
+      <span id="batch-msg" class="muted small"></span>
+    </div>
+  </section>
+
+  <!-- 3. Tek adım düzenleme -->
+  <section class="card" id="editor-card" hidden>
+    <div class="result-head">
+      <h2><span class="num">✎</span><span id="editor-title">Adım</span></h2>
+      <button id="editor-close" class="ghost small-btn" type="button">Kapat</button>
+    </div>
+    <p id="editor-text" class="muted small editor-text"></p>
+
+    <div class="time-row">
+      <label class="field">
+        <span>Kare zamanı</span>
+        <input id="time" type="text" inputmode="decimal" autocomplete="off">
+      </label>
+      <button id="use-current" class="ghost" type="button">Videodaki anı al</button>
+      <button id="reextract" class="primary" type="button">Bu zamandan çıkar</button>
+      <button id="scan" class="secondary" type="button">Yakında elin az olduğu kareyi bul</button>
+    </div>
+    <div id="scan-strip" class="strip" hidden></div>
+    <ol id="progress" class="progress" hidden></ol>
+    <p id="editor-msg" class="msg" role="status"></p>
+
+    <div id="editor-body" hidden>
+      <div class="tabs" role="tablist">
+        <button role="tab" id="tab-result" class="tab active" type="button">Sonuç</button>
+        <button role="tab" id="tab-edit" class="tab" type="button">Elle düzelt</button>
+      </div>
+      <div id="view-result">
+        <div class="stage" id="result-stage"><canvas id="result"></canvas></div>
+      </div>
+      <div id="view-edit" hidden>
+        <p class="muted small">Kırmızı = silinecek, yeşil = korunacak, soluk = arka plan. Kalan el parçasını <b>Sil</b> ile, yanlışlıkla silinen ürün parçasını <b>Geri getir</b> ile boya.</p>
+        <div class="tools">
+          <div class="seg" role="group" aria-label="Fırça">
+            <button id="brush-erase" class="seg-btn active" type="button">🔴 Sil</button>
+            <button id="brush-keep" class="seg-btn" type="button">🟢 Geri getir</button>
+          </div>
+          <label class="inline">Fırça <input id="brush-size" type="range" min="1" max="12" value="4"></label>
+          <button id="brush-clear" class="ghost small-btn" type="button">Fırçaları temizle</button>
+        </div>
+        <div class="stage"><canvas id="editor"></canvas></div>
+      </div>
+
+      <details class="settings">
+        <summary>Ayarlar <span class="muted small">(tüm adımlarda geçerli)</span></summary>
+        <div class="grid">
+          <label class="range">
+            <span>Elin etrafından ek silme <output id="expand-out"></output></span>
+            <input id="expand" type="range" min="0" max="5" step="0.25" value="1.25">
+          </label>
+          <label class="range">
+            <span>Ten rengi algılama <output id="skin-out"></output></span>
+            <input id="skin" type="range" min="0" max="100" value="50">
+          </label>
+          <label class="check"><input id="arm" type="checkbox" checked> Bilekten sonraki kolu da sil</label>
+          <label class="check"><input id="fill" type="checkbox" checked> Elin kapattığı yerleri tahminle doldur</label>
+          <label class="range">
+            <span>Doldurma genişliği <output id="reach-out"></output></span>
+            <input id="reach" type="range" min="1" max="12" step="0.5" value="4">
+          </label>
+          <label class="check"><input id="clean" type="checkbox" checked> Küçük artık parçaları temizle</label>
+          <label class="check"><input id="transparent" type="checkbox"> Beyaz yerine şeffaf arka plan</label>
+        </div>
+      </details>
+
+      <div class="actions">
+        <button id="dl-png" class="ghost" type="button">PNG indir</button>
+        <button id="dl-jpg" class="ghost" type="button">JPG indir</button>
+        <button id="dl-frame" class="ghost" type="button">Orijinal kareyi indir</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. PDF -->
+  <section class="card" id="pdf-card" hidden>
+    <h2><span class="num">3</span>PDF tarif</h2>
+    <p class="muted small">PDF'teki metinler bu alanlardan gelir. Yapay zekâ doldurduysa kontrol edip düzeltebilirsiniz.</p>
+    <div class="pdf-grid">
+      <label class="field wide"><span>Başlık</span><input id="pdf-title" type="text"></label>
+      <label class="field wide"><span>Alt başlık</span><input id="pdf-subtitle" type="text"></label>
+      <label class="field wide"><span>Giriş</span><textarea id="pdf-intro" rows="4"></textarea></label>
+      <label class="field"><span>Zorluk</span>
+        <select id="pdf-skill"><option value="">—</option><option>Beginner</option><option>Easy</option><option>Intermediate</option><option>Experienced</option></select>
+      </label>
+      <label class="field"><span>Tasarımcı / mağaza adı</span><input id="pdf-author" type="text" placeholder="ör. Ayşe's Crochet"></label>
+      <label class="field"><span>Malzemeler <small>(her satıra bir tane)</small></span><textarea id="pdf-materials" rows="4"></textarea></label>
+      <label class="field"><span>Araçlar <small>(her satıra bir tane)</small></span><textarea id="pdf-tools" rows="4"></textarea></label>
+      <label class="field wide"><span>Bitmiş ölçüler tablosu <small>(hücreleri | ile ayırın; ilk satır başlık)</small></span><textarea id="pdf-sizes" rows="4" placeholder="Size | Chains | Rows | Width | Height&#10;S | 26 | 36 | 10 cm | 22 cm"></textarea></label>
+      <label class="field"><span>Kısaltmalar <small>(ch = chain)</small></span><textarea id="pdf-abbr" rows="5"></textarea></label>
+      <label class="field"><span>Notlar <small>(her satıra bir tane)</small></span><textarea id="pdf-notes" rows="5"></textarea></label>
+      <label class="field wide"><span>Telif notu (son sayfa)</span><textarea id="pdf-copyright" rows="2"></textarea></label>
+      <label class="field"><span>Kapak fotoğrafı</span><select id="pdf-cover"></select></label>
+      <label class="field"><span>Fotoğraf boyutu</span>
+        <select id="pdf-size">
+          <option value="s">Küçük (sayfa başına daha çok adım)</option>
+          <option value="m" selected>Orta</option>
+          <option value="l">Büyük</option>
+        </select>
+      </label>
+    </div>
+    <div class="actions">
+      <button id="print" class="primary" type="button">PDF olarak kaydet</button>
+    </div>
+    <p class="muted small">Açılan yazdırma penceresinde yazıcı olarak <b>"PDF olarak kaydet"</b>i seçin. Telefonda: Paylaş → Yazdır → PDF.</p>
+  </section>
+
+  <!-- 5. Etsy -->
+  <section class="card" id="etsy-card" hidden>
+    <h2><span class="num">4</span>Etsy ilanı</h2>
+    <p class="muted small">Yapay zekânın hazırladığı ilan metni. Kopyala düğmesiyle Etsy'ye yapıştırın.</p>
+    <div class="etsy-field">
+      <div class="row-between"><span class="label">Başlık <span id="etsy-title-len" class="muted small"></span></span><button class="ghost small-btn copy" data-target="etsy-title" type="button">Kopyala</button></div>
+      <textarea id="etsy-title" rows="2" maxlength="140"></textarea>
+    </div>
+    <div class="etsy-field">
+      <div class="row-between"><span class="label">Açıklama</span><button class="ghost small-btn copy" data-target="etsy-desc" type="button">Kopyala</button></div>
+      <textarea id="etsy-desc" rows="10"></textarea>
+    </div>
+    <div class="etsy-field">
+      <div class="row-between"><span class="label">Etiketler <span class="muted small">(virgülle ayrılmış, en fazla 13)</span></span><button class="ghost small-btn copy" data-target="etsy-tags" type="button">Kopyala</button></div>
+      <textarea id="etsy-tags" rows="3"></textarea>
+    </div>
+  </section>
+
+  <footer class="muted small">
+    <p>İlk kullanımda yapay zekâ modelleri indirilir (yaklaşık 50–90 MB); sonra tarayıcı önbelleğinden gelir. Elin kapattığı bölgeler gerçek görüntü değil, çevresine bakılarak yapılan tahmindir.</p>
+  </footer>
+</main>
+
+<!-- Yazdırma çıktısı (yalnızca PDF'te görünür) -->
+<div id="booklet"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
