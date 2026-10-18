@@ -71,9 +71,10 @@ export function buildCoverPrompt({ title }) {
     "- Remove the hands completely and all clutter (yarn balls, tools, other objects).",
     "- Show the finished item(s) on a clean, seamless, light off-white background with soft, warm, even studio light and gentle natural shadows.",
     "- Keep the items' arrangement close to the original; make the composition balanced and attractive for an Etsy listing.",
+    "- Do NOT add any text, titles, letters, logos or watermarks to the image.",
     `- ${KEEP_ITEM}`,
     `- ${SHARPEN}`,
-    "- Photorealistic, sharp, high resolution, landscape 4:3 framing with a little space around the items.",
+    "- Photorealistic, sharp, high resolution, landscape 4:3 framing with generous space around the items (the image will be cropped slightly on a cover).",
   ].join("\n");
 }
 

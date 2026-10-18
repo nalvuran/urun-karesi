@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ürün Karesi</title>
 <meta name="description" content="Örgü videosu ve transkriptinden adım adım ürün fotoğrafları çıkar, elleri sil, PDF tarif kitapçığı hazırla.">
-<link rel="stylesheet" href="style.css?v=20261019b">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,400&family=Nunito+Sans:wght@400;600;700;800&display=swap">
+<link rel="stylesheet" href="style.css?v=20261019d">
 </head>
 <body>
 <main>
@@ -198,6 +201,8 @@
     <div class="pdf-grid">
       <label class="field wide"><span>Başlık</span><input id="pdf-title" type="text"></label>
       <label class="field wide"><span>Alt başlık</span><input id="pdf-subtitle" type="text"></label>
+      <label class="field"><span>Kapak üst etiketi</span><input id="pdf-kicker" type="text" value="Crochet Pattern"></label>
+      <label class="field"><span>Tema rengi <small>(kapaktan otomatik seçilir, değiştirebilirsiniz)</small></span><input id="pdf-color" type="color" value="#c4552d"></label>
       <label class="field wide"><span>Giriş</span><textarea id="pdf-intro" rows="4"></textarea></label>
       <label class="field"><span>Zorluk</span>
         <select id="pdf-skill"><option value="">—</option><option>Beginner</option><option>Easy</option><option>Intermediate</option><option>Experienced</option></select>
@@ -211,9 +216,9 @@
       <label class="field wide"><span>Telif notu (son sayfa)</span><textarea id="pdf-copyright" rows="2"></textarea></label>
       <label class="field"><span>Fotoğraf boyutu</span>
         <select id="pdf-size">
-          <option value="side">Yan yana: metin solda, fotoğraf sağda (kompakt)</option>
+          <option value="side" selected>Yan yana: metin solda, fotoğraf sağda (kompakt)</option>
           <option value="s">Küçük (sayfa başına daha çok adım)</option>
-          <option value="m" selected>Orta</option>
+          <option value="m">Orta</option>
           <option value="l">Büyük</option>
         </select>
       </label>
@@ -269,6 +274,6 @@
 <!-- Yazdırma çıktısı (yalnızca PDF'te görünür) -->
 <div id="booklet"></div>
 
-<script type="module" src="app.js?v=20261019a"></script>
+<script type="module" src="app.js?v=20261019c"></script>
 </body>
 </html>

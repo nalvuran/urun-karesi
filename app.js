@@ -1,10 +1,10 @@
-import { parseTime, formatTime, autoLevels, thumbDescriptor, descDistance, greedyMatch, DESC_W, DESC_H } from "./processing.js?v=20261019a";
-import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261019a";
+import { parseTime, formatTime, autoLevels, thumbDescriptor, descDistance, greedyMatch, DESC_W, DESC_H } from "./processing.js?v=20261019c";
+import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261019c";
 import {
   MODELS, writePattern, patternToSteps, buildChatPrompt, parseChatReply,
   linesToList, sizesToText, textToSizes, abbrToText, textToAbbr,
-} from "./pattern.js?v=20261019a";
-import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName, GEMINI_MODELS, editImageWithGemini, nearestAspect } from "./gemini.js?v=20261019a";
+} from "./pattern.js?v=20261019c";
+import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName, GEMINI_MODELS, editImageWithGemini, nearestAspect } from "./gemini.js?v=20261019c";
 
 const JSZIP_URL = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
 const FRAME_MAX = 2400; // Ham karenin en fazla uzun kenarı (piksel)
@@ -22,7 +22,7 @@ const els = Object.fromEntries([
   "pdf-card", "pdf-title", "pdf-intro", "pdf-author", "pdf-size", "print", "booklet",
   "cover-img", "cover-empty", "cover-time", "cover-use-current", "cover-grab", "cover-dl", "cover-prompt", "cover-file",
   "project-save", "project-open", "ai-card", "ai-status", "api-key", "ai-model", "api-remember", "ai-write", "ai-cancel",
-  "pdf-subtitle", "pdf-skill", "pdf-materials", "pdf-tools", "pdf-sizes", "pdf-abbr", "pdf-notes", "pdf-copyright",
+  "pdf-subtitle", "pdf-kicker", "pdf-color", "pdf-skill", "pdf-materials", "pdf-tools", "pdf-sizes", "pdf-abbr", "pdf-notes", "pdf-copyright",
   "etsy-card", "etsy-title", "etsy-title-len", "etsy-desc", "etsy-tags",
   "chat-copy", "chat-paste-open", "chat-panel", "chat-reply", "chat-apply", "chat-close",
 ].map((id) => [id.replace(/-(\w)/g, (_, c) => c.toUpperCase()), $(id)]));
@@ -322,6 +322,7 @@ document.querySelectorAll(".copy").forEach((b) => (b.onclick = async () => {
   b.textContent = "Kopyalandı ✓";
   setTimeout(() => (b.textContent = old), 1500);
 }));
+els.pdfColor.addEventListener("input", () => { els.pdfColor.dataset.auto = "0"; });
 els.pdfAuthor.addEventListener("change", () => {
   if (!els.pdfCopyright.value || /\[Your shop name\]/.test(els.pdfCopyright.value)) {
     els.pdfCopyright.value = DEFAULT_COPYRIGHT(els.pdfAuthor.value.trim());
@@ -945,11 +946,11 @@ async function aspectOf(blob) {
   return r;
 }
 /** Tek bir ögeyi (adım ya da kapak) Gemini'ye düzenletir. */
-async function gemEdit(item, prompt, signal) {
+async function gemEdit(item, prompt, signal, aspect) {
   if (!item.outBlob) throw new Error("Ham kare yok.");
   const blob = await editImageWithGemini({
     apiKey: els.gemKey.value.trim(), model: els.gemModel.value, prompt,
-    blob: item.outBlob, aspect: await aspectOf(item.outBlob), signal,
+    blob: item.outBlob, aspect: aspect || await aspectOf(item.outBlob), signal,
   });
   setGem(item, blob);
   return blob;
@@ -985,7 +986,7 @@ async function runGeminiBatch(redoAll) {
     setGemAutoMsg(`${i + 1}/${jobs.length} · ${j.label} Gemini'de düzenleniyor… (görsel başına 10–40 sn)`);
     if (j.item !== cover) { j.item.status = "working"; updateRow(j.item); }
     try {
-      await gemEdit(j.item, j.prompt, gemAbort.signal);
+      await gemEdit(j.item, j.prompt, gemAbort.signal, j.item === cover ? "4:3" : undefined);
       done.push({ file: j.item.gemBlob, target: j.item, how: "otomatik" });
       if (j.item !== cover) j.item.status = "";
     } catch (e) {
@@ -1038,7 +1039,7 @@ els.coverAuto.onclick = async () => {
   try {
     if (!cover.outBlob) await grabCover();
     els.coverAuto.textContent = "Düzenleniyor…";
-    await gemEdit(cover, buildCoverPrompt({ title: els.pdfTitle.value.trim() }));
+    await gemEdit(cover, buildCoverPrompt({ title: els.pdfTitle.value.trim() }), undefined, "4:3");
     renderCover();
     setMsg("Kapak Gemini ile düzenlendi.");
   } catch (e) { setMsg(e.message, true); els.pdfCard.scrollIntoView({ block: "nearest" }); }
@@ -1109,67 +1110,180 @@ function pdfSrc(item) {
   return (b && pdfCache.get(b)) || finalURL(item);
 }
 
-function buildBooklet() {
+// ---- Kitapçık yardımcıları ----
+const ICONS = {
+  yarn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="12" r="8"/><path d="M5 8.5c4 0 9 2 12.5 6M4 13c4.5-.5 9 1 12 4.5M8 4.8c1.5 3 5.5 6 11 6.5M19 18.5l3 2.5"/></svg>',
+  hook: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5 21 17.5 5.5"/><path d="M17.5 5.5c1-1.3 3.2-.6 2.6 1.1-.4 1-1.6 1.1-2.1.4"/><path d="M4 20l2.2 1.6"/></svg>',
+};
+
+/** "Row 1: ... (24 (34, 44) hdc)" → etiket, gövde, sondaki ilmek sayısı */
+function splitStep(text) {
+  let t = text.trim();
+  let lbl = "";
+  const m = t.match(/^((?:Rows?|Rnds?|Rounds?|Row|Rnd)\s[0-9][0-9\s–\-,()&]*?|Small leaf|Large leaf|Leaf|Stem|Step \d+)\s*:\s*/i);
+  if (m) { lbl = m[1].trim() + ":"; t = t.slice(m[0].length); }
+  let count = "";
+  const end = t.replace(/\.\s*$/, "");
+  if (end.endsWith(")")) {
+    let depth = 0, k = end.length - 1;
+    for (; k >= 0; k--) {
+      if (end[k] === ")") depth++;
+      else if (end[k] === "(" && --depth === 0) break;
+    }
+    const inner = k >= 0 ? end.slice(k + 1, -1) : "";
+    if (k > 0 && /\d/.test(inner) && /\b(sc|hdc|dc|tr|sts?|ch|sl st|hdc per row|sc per round|stitches)\b/i.test(inner)) {
+      count = inner;
+      t = end.slice(0, k).trim();
+    }
+  }
+  return { lbl, body: t, count };
+}
+
+/** Kapak görselinden canlı bir tema rengi seç (en sık görülen doygun ton). */
+async function themeFromImage(blob) {
+  try {
+    const bmp = await createImageBitmap(blob);
+    const c = document.createElement("canvas");
+    c.width = 48; c.height = 48;
+    const g = c.getContext("2d", { willReadFrequently: true });
+    g.drawImage(bmp, 0, 0, 48, 48);
+    bmp.close?.();
+    const d = g.getImageData(0, 0, 48, 48).data;
+    const buckets = new Array(36).fill(0);
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i] / 255, gg = d[i + 1] / 255, b = d[i + 2] / 255;
+      const mx = Math.max(r, gg, b), mn = Math.min(r, gg, b), l = (mx + mn) / 2, ch = mx - mn;
+      if (ch < 0.25 || l < 0.18 || l > 0.85) continue;
+      let h = mx === r ? ((gg - b) / ch) % 6 : mx === gg ? (b - r) / ch + 2 : (r - gg) / ch + 4;
+      h = (h * 60 + 360) % 360;
+      buckets[Math.floor(h / 10)] += ch;
+    }
+    const top = buckets.indexOf(Math.max(...buckets));
+    if (buckets[top] === 0) return null;
+    return top * 10 + 5;
+  } catch { return null; }
+}
+function themeVars(hue) {
+  // Sarı-yeşil tonlar beyaz zeminde soluk kalır; okunabilirlik için koyulaştır
+  const l = hue > 40 && hue < 170 ? 36 : 44;
+  return `--b-accent:hsl(${hue} 58% ${l}%);--b-deep:hsl(${hue} 55% ${l - 14}%);--b-soft:hsl(${hue} 70% 96%);--b-line:hsl(${hue} 30% 88%)`;
+}
+function hexToHue(hex) {
+  const m = hex.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) return null;
+  const [r, g, b] = m.slice(1).map((x) => parseInt(x, 16) / 255);
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), ch = mx - mn;
+  if (!ch) return 20;
+  const h = mx === r ? ((g - b) / ch) % 6 : mx === g ? (b - r) / ch + 2 : (r - g) / ch + 4;
+  return Math.round((h * 60 + 360) % 360);
+}
+
+function buildBooklet(hue = 18) {
   const inc = steps.filter((s) => s.include && s.text.trim());
   const nums = stepNumbers();
-  const clean = (t) => esc(String(t).replace(/\s*\[CHECK:[^\]]*\]/gi, "")); // Kontrol notları PDF'e girmez
+  const strip = (t) => String(t).replace(/\s*\[CHECK:[^\]]*\]/gi, "").trim();
+  const clean = (t) => esc(strip(t));
+  const lines = (t) => linesToList(t).map(strip).filter(Boolean);
+  const ul = (t) => lines(t).map((l) => `<li>${esc(l)}</li>`).join("");
   const title = els.pdfTitle.value.trim() || "Pattern";
   const author = els.pdfAuthor.value.trim();
-  const strip = (t) => String(t).replace(/\s*\[CHECK:[^\]]*\]/gi, "").trim();
-  const list = (t) => linesToList(t).map(strip).filter(Boolean).map((l) => `<li>${esc(l)}</li>`).join("");
   const sizes = textToSizes(els.pdfSizes.value);
-  const abbr = textToAbbr(els.pdfAbbr.value);
+  const abbr = textToAbbr(els.pdfAbbr.value).filter((x) => x.abbr);
   const coverURL = pdfSrc(cover);
+  const kicker = els.pdfKicker.value.trim() || "Crochet Pattern";
 
-  const infoBlocks = [
-    els.pdfMaterials.value.trim() && `<div class="b-box"><h3>Materials</h3><ul>${list(els.pdfMaterials.value)}</ul></div>`,
-    els.pdfTools.value.trim() && `<div class="b-box"><h3>Tools</h3><ul>${list(els.pdfTools.value)}</ul></div>`,
+  // Kapak rozetleri
+  const hookLine = lines(els.pdfTools.value).find((l) => /\d\s*mm/i.test(l));
+  const chips = [
+    els.pdfSkill.value && `Skill: ${els.pdfSkill.value}`,
+    hookLine && `Hook: ${(hookLine.match(/[\d.,]+\s*mm/i) || [hookLine])[0]}`,
+    sizes.rows.length > 1 && `${sizes.rows.length} sizes`,
+    "US terms",
+  ].filter(Boolean);
+
+  const cards = [
+    els.pdfMaterials.value.trim() && `<div class="b-card"><h3>${ICONS.yarn}Materials</h3><ul>${ul(els.pdfMaterials.value)}</ul></div>`,
+    els.pdfTools.value.trim() && `<div class="b-card"><h3>${ICONS.hook}Tools</h3><ul>${ul(els.pdfTools.value)}</ul></div>`,
   ].filter(Boolean).join("");
   const sizesHTML = sizes.headers.length ? `
-    <h3>Finished Sizes</h3>
+    <h3 class="b-h3">Finished sizes</h3>
     <table class="b-table"><thead><tr>${sizes.headers.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead>
-    <tbody>${sizes.rows.map((r) => `<tr>${r.map((c) => `<td>${clean(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "";
-  const abbrHTML = abbr.length ? `
-    <h3>Abbreviations (US terms)</h3>
-    <table class="b-table b-abbr"><tbody>${abbr.map((a) => `<tr><th>${esc(a.abbr)}</th><td>${esc(a.meaning)}</td></tr>`).join("")}</tbody></table>` : "";
-  const notesItems = list(els.pdfNotes.value);
-  const notesHTML = notesItems ? `<h3>Notes</h3><ul class="b-notes">${notesItems}</ul>` : "";
+    <tbody>${sizes.rows.map((r) => `<tr>${sizes.headers.map((_, i) => `<td>${clean(r[i] ?? "") || "—"}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "";
+  const abbrHTML = abbr.length ? `<h3 class="b-h3">Abbreviations (US terms)</h3>
+    <div class="b-abbr">${abbr.map((x) => `<div><b>${esc(x.abbr)}</b><span>${esc(x.meaning)}</span></div>`).join("")}</div>` : "";
+  const tips = lines(els.pdfNotes.value);
+  const tipsHTML = tips.length ? `<h3 class="b-h3">Good to know</h3><div class="b-tips">${tips.map((t) => `<div class="b-tip"><span>${esc(t)}</span></div>`).join("")}</div>` : "";
 
-  let lastSec;
+  let lastSec, secNo = 0;
   const stepsHTML = inc.map((s) => {
     let head = "";
-    if (s.section && s.section !== lastSec) head = `<h2 class="b-sec">${esc(s.section)}</h2>`;
+    if (s.section && s.section !== lastSec) {
+      secNo++;
+      head = `<div class="b-sec"><span class="b-sec-no">${String(secNo).padStart(2, "0")}</span><h2>${esc(s.section)}</h2></div>`;
+    }
     lastSec = s.section;
     const url = s.photo ? pdfSrc(s) : null;
-    const img = url ? `<img alt="" src="${url}">` : "";
     const n = nums.get(s.id);
     if (!n) return `${head}<div class="b-note">${clean(s.text)}</div>`;
-    return `${head}<div class="b-step"><div class="b-num">${n}</div><div class="b-body"><p>${clean(s.text)}</p>${img}</div></div>`;
+    const { lbl, body, count } = splitStep(strip(s.text));
+    const p = `<p>${lbl ? `<span class="b-lbl">${esc(lbl)}</span> ` : ""}${esc(body)}${count ? ` <span class="b-count">${esc(count)}</span>` : ""}</p>`;
+    const img = url ? `<figure class="b-photo"><img alt="" src="${url}"></figure>` : "";
+    return `${head}<div class="b-step${url ? " has-img" : ""}"><div class="b-num">${n}</div><div class="b-body">${p}${img}</div></div>`;
   }).join("");
 
   els.booklet.className = `size-${els.pdfSize.value}`;
+  els.booklet.setAttribute("style", themeVars(hue));
   els.booklet.innerHTML = `
     <section class="b-cover">
-      ${els.pdfSkill.value ? `<div class="b-skill">${esc(els.pdfSkill.value)}</div>` : ""}
-      <h1>${esc(title)}</h1>
-      ${els.pdfSubtitle.value.trim() ? `<p class="b-subtitle">${esc(els.pdfSubtitle.value.trim())}</p>` : ""}
-      ${coverURL ? `<img alt="" src="${coverURL}">` : ""}
-      <div class="b-cover-foot">${author ? `Designed by ${esc(author)}` : ""}<span>PDF Pattern · US terms</span></div>
+      <div class="b-cover-photo">${coverURL ? `<img alt="" src="${coverURL}">` : ""}</div>
+      <div class="b-cover-body">
+        <div class="b-kicker">${esc(kicker)}</div>
+        <h1>${esc(title)}</h1>
+        ${els.pdfSubtitle.value.trim() ? `<p class="b-subtitle">${esc(els.pdfSubtitle.value.trim())}</p>` : ""}
+        <div class="b-chips">${chips.map((c) => `<span class="b-chip">${esc(c)}</span>`).join("")}</div>
+        <div class="b-cover-foot"><span>${author ? `Designed by <b>${esc(author)}</b>` : ""}</span><span>Digital PDF pattern</span></div>
+      </div>
     </section>
     <section class="b-info">
+      <h1 class="b-page-title">Before you begin</h1>
       ${els.pdfIntro.value.trim() ? `<p class="b-intro">${esc(els.pdfIntro.value.trim())}</p>` : ""}
-      ${infoBlocks ? `<div class="b-boxes">${infoBlocks}</div>` : ""}
-      ${sizesHTML}${abbrHTML}${notesHTML}
+      ${cards ? `<div class="b-cards">${cards}</div>` : ""}
+      ${sizesHTML}${abbrHTML}${tipsHTML}
     </section>
     <section class="b-steps">
       <h1 class="b-steps-title">Instructions</h1>
       ${stepsHTML}
       <div class="b-end">
-        <p class="b-enjoy">Enjoy your finished project!</p>
+        <h2>You did it!</h2>
+        <p>Thank you for making this pattern. If you enjoyed it, a short review on Etsy means the world to a small shop — and a photo of your finished piece is always a joy to see.</p>
         ${els.pdfCopyright.value.trim() ? `<p class="b-copy">${esc(els.pdfCopyright.value.trim())}</p>` : ""}
       </div>
     </section>`;
+  // Sayfa üst bilgisi (kapak hariç): tarif adı · mağaza
+  let hs = document.getElementById("booklet-page-style");
+  if (!hs) { hs = document.createElement("style"); hs.id = "booklet-page-style"; document.head.appendChild(hs); }
+  const q = (t) => `"${t.replace(/["\\]/g, "")}"`;
+  hs.textContent = `@media print { @page { @top-left { content: ${q(title)}; font: 600 8.5pt "Nunito Sans", sans-serif; color: #9a8f86; }
+    @top-right { content: ${q(author)}; font: 600 8.5pt "Nunito Sans", sans-serif; color: #9a8f86; } } }`;
   return els.booklet.querySelectorAll("img");
+}
+
+async function bookletHue() {
+  if (els.pdfColor.dataset.auto !== "0") {
+    const b = cover.gemBlob || cover.outBlob;
+    const h = b ? await themeFromImage(b) : null;
+    if (h != null) {
+      // Seçiciyi otomatik bulunan renkle güncelle
+      els.pdfColor.value = hslToHex(h, 58, h > 40 && h < 170 ? 36 : 44);
+      return h;
+    }
+  }
+  return hexToHue(els.pdfColor.value) ?? 18;
+}
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const f = (n) => { const k = (n + h / 30) % 12; const c = l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1)); return Math.round(c * 255).toString(16).padStart(2, "0"); };
+  return `#${f(0)}${f(8)}${f(4)}`;
 }
 
 els.print.onclick = async () => {
@@ -1188,7 +1302,7 @@ els.print.onclick = async () => {
   setMsg("PDF hazırlanıyor (görseller küçültülüyor)…");
   await preparePdfImages();
   setMsg("");
-  const imgs = buildBooklet();
+  const imgs = buildBooklet(await bookletHue());
   await Promise.all([...imgs].map((im) => (im.complete ? null : new Promise((r) => { im.onload = im.onerror = r; }))));
   const oldTitle = document.title;
   document.title = els.pdfTitle.value.trim() || "pattern"; // PDF dosya adı olarak önerilir
@@ -1197,7 +1311,7 @@ els.print.onclick = async () => {
 };
 
 // =============== Proje kaydet / aç ===============
-const FIELD_KEYS = ["pdfTitle", "pdfSubtitle", "pdfIntro", "pdfSkill", "pdfAuthor", "pdfMaterials", "pdfTools",
+const FIELD_KEYS = ["pdfTitle", "pdfSubtitle", "pdfKicker", "pdfColor", "pdfIntro", "pdfSkill", "pdfAuthor", "pdfMaterials", "pdfTools",
   "pdfSizes", "pdfAbbr", "pdfNotes", "pdfCopyright", "pdfSize", "etsyTitle", "etsyDesc", "etsyTags", "coverTime"];
 
 els.projectSave.onclick = () => {

@@ -163,59 +163,90 @@ textarea, select, .field input { font: inherit; color: var(--text); background: 
 .etsy-field { margin-top: 12px; }
 .etsy-field textarea { width: 100%; margin-top: 4px; resize: vertical; }
 
-/* ---------- Yazdırma / PDF ---------- */
+/* ---------- Yazdırma / PDF (kitapçık tasarımı) ---------- */
 #booklet { display: none; }
 @media print {
-  @page { size: A4; margin: 16mm 15mm 18mm;
-    @bottom-center { content: counter(page); font: 9pt system-ui, sans-serif; color: #999; } }
-  @page :first { @bottom-center { content: none; } }
-  body { background: #fff !important; color: #222 !important; }
+  @page { size: A4; margin: 17mm 16mm 18mm;
+    @bottom-right { content: counter(page); font: 600 8.5pt "Nunito Sans", system-ui, sans-serif; color: #9a8f86; } }
+  @page cover { margin: 0; @bottom-right { content: none; } @top-left { content: none; } @top-right { content: none; } }
+  body { background: #fff !important; color: #2b2622 !important; margin: 0; }
   main { display: none !important; }
-  #booklet { display: block; font: 11pt/1.55 Georgia, "Times New Roman", serif; color: #222;
-    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  #booklet h1, #booklet h2, #booklet h3 { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #222; }
-
-  .b-cover { min-height: 250mm; display: flex; flex-direction: column; align-items: center; text-align: center;
-    page-break-after: always; padding-top: 6mm; }
-  .b-skill { font: 600 9pt system-ui, sans-serif; letter-spacing: .12em; text-transform: uppercase; color: #c4552d;
-    border: 0.4mm solid #c4552d; border-radius: 20mm; padding: 1mm 4mm; margin-bottom: 6mm; }
-  .b-cover h1 { font-size: 30pt; line-height: 1.15; margin: 0 0 3mm; }
-  .b-subtitle { font-size: 13pt; color: #666; margin: 0 0 8mm; font-style: italic; }
-  .b-cover img { max-width: 100%; max-height: 150mm; object-fit: contain; margin: auto 0; }
-  .b-cover-foot { margin-top: auto; padding-top: 6mm; width: 100%; border-top: 0.4mm solid #c4552d;
-    display: flex; justify-content: space-between; font: 10pt system-ui, sans-serif; color: #555; }
-
-  .b-info { page-break-after: always; }
-  .b-intro { font-size: 12pt; margin: 0 0 6mm; }
-  .b-boxes { display: flex; gap: 6mm; margin-bottom: 4mm; }
-  .b-box { flex: 1; background: #faf5f0; border-radius: 3mm; padding: 3mm 5mm; }
-  .b-box ul, .b-notes { margin: 1mm 0 0; padding-left: 5mm; }
-  #booklet h3 { font-size: 12pt; margin: 6mm 0 2mm; color: #c4552d; }
-  .b-box h3 { margin-top: 1mm; }
-  .b-table { width: 100%; border-collapse: collapse; font: 10pt system-ui, sans-serif; break-inside: avoid; }
-  .b-table th, .b-table td { border-bottom: 0.3mm solid #e2d9cf; padding: 1.5mm 2mm; text-align: left; }
-  .b-table thead th { background: #faf5f0; }
-  .b-abbr th { width: 22mm; color: #c4552d; }
-
-  .b-steps-title { font-size: 20pt; margin: 0 0 4mm; }
-  .b-sec { font-size: 14pt; margin: 7mm 0 2mm; padding-bottom: 1.5mm; border-bottom: 0.5mm solid #c4552d; break-after: avoid; }
-  .b-step { display: flex; gap: 5mm; align-items: flex-start; padding: 2.5mm 0; border-bottom: 0.3mm solid #eee; break-inside: avoid; }
-  .b-num { flex: 0 0 8mm; height: 8mm; border-radius: 50%; background: #c4552d; color: #fff;
-    font: 700 9.5pt/8mm system-ui, sans-serif; text-align: center; }
-  .b-body { flex: 1; }
-  .b-body p { margin: 0.5mm 0 0; }
-  .b-body img { display: block; margin-top: 3mm; max-width: 100%; object-fit: contain; border-radius: 2mm; }
-  .size-s .b-body img { max-height: 45mm; }
-  .size-m .b-body img { max-height: 70mm; }
-  .size-l .b-body img { max-height: 110mm; }
-  .size-side .b-body { display: grid; grid-template-columns: 1fr 48%; gap: 5mm; align-items: start; }
-  .size-side .b-body p { grid-column: 1; }
-  .size-side .b-body img { grid-column: 2; grid-row: 1; margin-top: 0; max-height: 62mm; width: 100%; }
-  .b-note { font-style: italic; color: #555; padding: 2mm 0 2mm 13mm; break-inside: avoid; }
-  .b-end { margin-top: 10mm; text-align: center; break-inside: avoid; }
-  .b-enjoy { font: 600 13pt system-ui, sans-serif; color: #c4552d; }
-  .b-copy { font-size: 8.5pt; color: #777; margin-top: 6mm; }
+  #booklet { display: block; }
 }
+#booklet {
+  --b-accent: #c4552d; --b-deep: #8e3a1c; --b-soft: #fbefe8; --b-line: #eadfd6; --b-ink: #2b2622; --b-muted: #7a6f66;
+  font: 10.5pt/1.6 "Nunito Sans", system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--b-ink);
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+#booklet h1, #booklet h2, #booklet h3 { display: block; font-family: "Fraunces", Georgia, "Times New Roman", serif; color: var(--b-ink); font-weight: 600; letter-spacing: -0.01em; }
+#booklet img { display: block; }
+
+/* Kapak: tam sayfa */
+.b-cover { page: cover; height: 297mm; display: flex; flex-direction: column; break-after: page; background: #fffdfb; }
+.b-cover-photo { height: 158mm; overflow: hidden; border-radius: 0 0 10mm 10mm; background: var(--b-soft); }
+.b-cover-photo img { width: 100%; height: 100%; object-fit: cover; }
+.b-cover-body { flex: 1; padding: 11mm 18mm 12mm; display: flex; flex-direction: column; }
+.b-kicker { font: 800 8.5pt "Nunito Sans", sans-serif; letter-spacing: .28em; text-transform: uppercase; color: var(--b-accent); }
+.b-cover h1 { font-size: 34pt; line-height: 1.05; margin: 3mm 0 3mm; }
+.b-subtitle { font: italic 400 13pt/1.45 "Fraunces", Georgia, serif; color: var(--b-muted); margin: 0 0 6mm; }
+.b-chips { display: block; line-height: 1; }
+.b-chip { display: inline-block; margin: 0 2.2mm 2.2mm 0; font: 700 8.5pt/1 "Nunito Sans", sans-serif; padding: 2mm 3.8mm; border-radius: 4mm; background: var(--b-soft); color: var(--b-deep); white-space: nowrap; }
+.b-cover-foot { margin-top: auto; padding-top: 5mm; border-top: .35mm solid var(--b-line); display: flex; justify-content: space-between; align-items: center;
+  font: 600 9pt "Nunito Sans", sans-serif; color: var(--b-muted); }
+.b-cover-foot b { color: var(--b-ink); }
+
+/* Başlamadan önce */
+.b-info { margin-bottom: 8mm; }
+.b-page-title { font-size: 22pt; margin: 0 0 2mm; }
+.b-page-title::after { content: ""; display: block; width: 18mm; height: 1.1mm; border-radius: 1mm; background: var(--b-accent); margin-top: 3mm; }
+.b-intro { font-size: 11pt; line-height: 1.6; margin: 4mm 0 5mm; }
+.b-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; margin-bottom: 2mm; }
+.b-card { background: var(--b-soft); border-radius: 4mm; padding: 4.5mm 5mm; break-inside: avoid; }
+.b-card h3 { display: flex; align-items: center; gap: 2.5mm; font-size: 12.5pt; margin: 0 0 2mm; }
+.b-card h3 svg { width: 6mm; height: 6mm; flex: 0 0 auto; color: var(--b-accent); }
+.b-card ul { margin: 0; padding-left: 4.5mm; }
+.b-card li { margin: .8mm 0; }
+#booklet h3.b-h3 { font-size: 13pt; margin: 6mm 0 2.5mm; color: var(--b-deep); }
+.b-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 9pt; break-inside: avoid; border: .3mm solid var(--b-line); border-radius: 3mm; overflow: hidden; }
+.b-table th, .b-table td { padding: 2mm 2.4mm; text-align: left; border-bottom: .3mm solid var(--b-line); vertical-align: top; }
+.b-table thead th { background: var(--b-soft); color: var(--b-deep); font-weight: 800; font-size: 8.5pt; }
+.b-table tr:last-child td { border-bottom: 0; }
+.b-abbr { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8mm; break-inside: avoid; }
+.b-abbr div { display: flex; gap: 3mm; padding: 1.4mm 0; border-bottom: .3mm dotted var(--b-line); }
+.b-abbr b { min-width: 13mm; color: var(--b-accent); font-weight: 800; }
+.b-tips { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5mm 4mm; }
+.b-tip { display: flex; gap: 2.5mm; padding: 2.6mm 3.5mm; font-size: 9.5pt; line-height: 1.5; border-left: 1.2mm solid var(--b-accent); background: #fff8f4; border-radius: 0 3mm 3mm 0; break-inside: avoid; }
+.b-tip::before { content: "✦"; color: var(--b-accent); font-weight: 800; }
+
+/* Talimatlar */
+.b-steps-title { font-size: 24pt; margin: 0 0 4mm; break-after: avoid; }
+.b-body, .b-photo { break-inside: avoid; }
+.b-sec { display: flex; align-items: baseline; gap: 4mm; margin: 8mm 0 3mm; padding-bottom: 2.5mm; border-bottom: .5mm solid var(--b-accent); break-after: avoid; }
+.b-sec:first-of-type { margin-top: 2mm; }
+.b-sec-no { font: 600 22pt/1 "Fraunces", Georgia, serif; color: var(--b-accent); }
+#booklet .b-sec h2 { font-size: 16pt; margin: 0; flex: 1; }
+.b-step { display: flex; gap: 4mm; padding: 3.2mm 0; border-bottom: .3mm solid var(--b-line); break-inside: avoid; }
+.b-num { flex: 0 0 7.5mm; height: 7.5mm; border-radius: 50%; background: var(--b-accent); color: #fff;
+  font: 800 9pt/7.5mm "Nunito Sans", sans-serif; text-align: center; margin-top: .3mm; }
+.b-body { flex: 1; min-width: 0; }
+.b-body p { margin: 0; }
+.b-lbl { font-weight: 800; color: var(--b-deep); }
+.b-count { display: inline-block; margin-left: 1.5mm; padding: 0 2.2mm; border-radius: 10mm; background: var(--b-soft); color: var(--b-deep); font-weight: 700; font-size: 8.8pt; white-space: nowrap; }
+.b-photo { margin: 3mm 0 0; border-radius: 3.5mm; overflow: hidden; box-shadow: 0 .6mm 2.2mm rgba(60, 35, 20, .14); background: #f6f2ee; }
+.b-photo img { width: 100%; object-fit: cover; }
+.size-s .b-photo { max-width: 95mm; } .size-s .b-photo img { max-height: 58mm; }
+.size-m .b-photo { max-width: 125mm; } .size-m .b-photo img { max-height: 78mm; }
+.size-l .b-photo img { max-height: 112mm; }
+.size-side .b-step.has-img .b-body { display: grid; grid-template-columns: 1fr 50%; gap: 5mm; align-items: start; }
+.size-side .b-step.has-img .b-photo { margin: 0; }
+.size-side .b-photo img { max-height: 64mm; }
+.b-note { margin: 2.5mm 0 2.5mm 11.5mm; padding: 2.6mm 4mm; background: #fff8f4; border-left: 1.2mm solid var(--b-accent); border-radius: 0 3mm 3mm 0; font-style: italic; color: #5a4e45; break-inside: avoid; }
+
+/* Kapanış */
+.b-end { margin-top: 12mm; text-align: center; padding: 8mm 10mm; background: var(--b-soft); border-radius: 5mm; break-inside: avoid; }
+#booklet .b-end h2 { font-size: 19pt; margin: 0 0 2mm; color: var(--b-deep); }
+.b-end p { margin: 1.5mm auto; max-width: 140mm; }
+.b-copy { margin-top: 6mm !important; font-size: 8pt; color: var(--b-muted); }
 
 /* ---------- API'siz (sohbet) yolu ---------- */
 .tarif-title { margin: 16px 0 0; }
