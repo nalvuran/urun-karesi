@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ürün Karesi</title>
 <meta name="description" content="Örgü videosu ve transkriptinden adım adım ürün fotoğrafları çıkar, elleri sil, PDF tarif kitapçığı hazırla.">
-<link rel="stylesheet" href="style.css?v=20261018h">
+<link rel="stylesheet" href="style.css?v=20261019b">
 </head>
 <body>
 <main>
@@ -211,6 +211,7 @@
       <label class="field wide"><span>Telif notu (son sayfa)</span><textarea id="pdf-copyright" rows="2"></textarea></label>
       <label class="field"><span>Fotoğraf boyutu</span>
         <select id="pdf-size">
+          <option value="side">Yan yana: metin solda, fotoğraf sağda (kompakt)</option>
           <option value="s">Küçük (sayfa başına daha çok adım)</option>
           <option value="m" selected>Orta</option>
           <option value="l">Büyük</option>
@@ -268,6 +269,6 @@
 <!-- Yazdırma çıktısı (yalnızca PDF'te görünür) -->
 <div id="booklet"></div>
 
-<script type="module" src="app.js?v=20261018h"></script>
+<script type="module" src="app.js?v=20261019a"></script>
 </body>
 </html>

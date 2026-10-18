@@ -208,6 +208,9 @@ textarea, select, .field input { font: inherit; color: var(--text); background: 
   .size-s .b-body img { max-height: 45mm; }
   .size-m .b-body img { max-height: 70mm; }
   .size-l .b-body img { max-height: 110mm; }
+  .size-side .b-body { display: grid; grid-template-columns: 1fr 48%; gap: 5mm; align-items: start; }
+  .size-side .b-body p { grid-column: 1; }
+  .size-side .b-body img { grid-column: 2; grid-row: 1; margin-top: 0; max-height: 62mm; width: 100%; }
   .b-note { font-style: italic; color: #555; padding: 2mm 0 2mm 13mm; break-inside: avoid; }
   .b-end { margin-top: 10mm; text-align: center; break-inside: avoid; }
   .b-enjoy { font: 600 13pt system-ui, sans-serif; color: #c4552d; }

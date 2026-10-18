@@ -1,10 +1,10 @@
-import { parseTime, formatTime, autoLevels, thumbDescriptor, descDistance, greedyMatch, DESC_W, DESC_H } from "./processing.js?v=20261018h";
-import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261018h";
+import { parseTime, formatTime, autoLevels, thumbDescriptor, descDistance, greedyMatch, DESC_W, DESC_H } from "./processing.js?v=20261019a";
+import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261019a";
 import {
   MODELS, writePattern, patternToSteps, buildChatPrompt, parseChatReply,
   linesToList, sizesToText, textToSizes, abbrToText, textToAbbr,
-} from "./pattern.js?v=20261018h";
-import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName, GEMINI_MODELS, editImageWithGemini, nearestAspect } from "./gemini.js?v=20261018h";
+} from "./pattern.js?v=20261019a";
+import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName, GEMINI_MODELS, editImageWithGemini, nearestAspect } from "./gemini.js?v=20261019a";
 
 const JSZIP_URL = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
 const FRAME_MAX = 2400; // Ham karenin en fazla uzun kenarı (piksel)
@@ -1078,16 +1078,48 @@ els.coverFile.addEventListener("change", () => {
 });
 
 // =============== PDF ===============
+// PDF boyutunu küçük tutmak için görseller (özellikle Gemini'nin büyük PNG'leri) JPEG'e çevrilip küçültülür.
+const PDF_MAX = 1600;
+const pdfCache = new WeakMap(); // Blob → küçültülmüş JPEG URL
+async function compressForPdf(blob) {
+  if (pdfCache.has(blob)) return pdfCache.get(blob);
+  const bmp = await createImageBitmap(blob);
+  const k = Math.min(1, PDF_MAX / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  const g = c.getContext("2d");
+  g.fillStyle = "#fff";
+  g.fillRect(0, 0, c.width, c.height);
+  g.drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close?.();
+  const out = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.85));
+  const url = URL.createObjectURL(out);
+  pdfCache.set(blob, url);
+  return url;
+}
+async function preparePdfImages() {
+  const items = [cover, ...steps.filter((s) => s.include && s.photo)];
+  for (const it of items) {
+    const b = it.gemBlob || it.outBlob;
+    if (b) { try { await compressForPdf(b); } catch (e) { console.error(e); } }
+  }
+}
+function pdfSrc(item) {
+  const b = item.gemBlob || item.outBlob;
+  return (b && pdfCache.get(b)) || finalURL(item);
+}
+
 function buildBooklet() {
   const inc = steps.filter((s) => s.include && s.text.trim());
   const nums = stepNumbers();
   const clean = (t) => esc(String(t).replace(/\s*\[CHECK:[^\]]*\]/gi, "")); // Kontrol notları PDF'e girmez
   const title = els.pdfTitle.value.trim() || "Pattern";
   const author = els.pdfAuthor.value.trim();
-  const list = (t) => linesToList(t).map((l) => `<li>${clean(l)}</li>`).join("");
+  const strip = (t) => String(t).replace(/\s*\[CHECK:[^\]]*\]/gi, "").trim();
+  const list = (t) => linesToList(t).map(strip).filter(Boolean).map((l) => `<li>${esc(l)}</li>`).join("");
   const sizes = textToSizes(els.pdfSizes.value);
   const abbr = textToAbbr(els.pdfAbbr.value);
-  const coverURL = finalURL(cover);
+  const coverURL = pdfSrc(cover);
 
   const infoBlocks = [
     els.pdfMaterials.value.trim() && `<div class="b-box"><h3>Materials</h3><ul>${list(els.pdfMaterials.value)}</ul></div>`,
@@ -1100,15 +1132,15 @@ function buildBooklet() {
   const abbrHTML = abbr.length ? `
     <h3>Abbreviations (US terms)</h3>
     <table class="b-table b-abbr"><tbody>${abbr.map((a) => `<tr><th>${esc(a.abbr)}</th><td>${esc(a.meaning)}</td></tr>`).join("")}</tbody></table>` : "";
-  const notesHTML = els.pdfNotes.value.trim()
-    ? `<h3>Notes</h3><ul class="b-notes">${linesToList(els.pdfNotes.value).map((l) => `<li>${clean(l)}</li>`).join("")}</ul>` : "";
+  const notesItems = list(els.pdfNotes.value);
+  const notesHTML = notesItems ? `<h3>Notes</h3><ul class="b-notes">${notesItems}</ul>` : "";
 
   let lastSec;
   const stepsHTML = inc.map((s) => {
     let head = "";
     if (s.section && s.section !== lastSec) head = `<h2 class="b-sec">${esc(s.section)}</h2>`;
     lastSec = s.section;
-    const url = s.photo ? finalURL(s) : null;
+    const url = s.photo ? pdfSrc(s) : null;
     const img = url ? `<img alt="" src="${url}">` : "";
     const n = nums.get(s.id);
     if (!n) return `${head}<div class="b-note">${clean(s.text)}</div>`;
@@ -1153,6 +1185,9 @@ els.print.onclick = async () => {
     checks && `${checks} adımda hâlâ [CHECK] notu var (notlar PDF'e yazılmaz ama içerik kontrol edilmeli).`,
   ].filter(Boolean);
   if (warns.length && !confirm(`${warns.join("\n")}\n\nYine de devam edilsin mi?`)) return;
+  setMsg("PDF hazırlanıyor (görseller küçültülüyor)…");
+  await preparePdfImages();
+  setMsg("");
   const imgs = buildBooklet();
   await Promise.all([...imgs].map((im) => (im.complete ? null : new Promise((r) => { im.onload = im.onerror = r; }))));
   const oldTitle = document.title;
