@@ -1,5 +1,5 @@
 // Transkripti Claude API ile satışa hazır İngilizce (US terimli) tarife çevirir.
-import { parseTime, formatTime } from "./processing.js?v=20261018b";
+import { parseTime, formatTime } from "./processing.js?v=20261018c";
 
 export const MODELS = [
   { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (önerilen, hızlı ve ekonomik)" },
@@ -28,6 +28,8 @@ PHOTOS
 - Set photo=true where a photo genuinely helps a buyer: the result of a stage (finished panel, joined piece, stuffed body, finished stem) and key technique moments. Roughly one photo every 2–4 steps, at most about 25.
 - photo_time: a moment where the RESULT of that step is visible in the video — usually 1–2 seconds before the next instruction in the transcript starts. Format m:ss. It must lie inside the video.
 - source_time: the transcript timestamp where this step is explained. Format m:ss.
+- photo_type: "result" when the photo shows the outcome of a stage (a finished panel, joined or stuffed piece, finished part); "technique" when it shows hands and hook performing a movement the buyer must copy.
+- cover_time: one moment (m:ss) where the finished item(s) are shown most completely and attractively — often in the first seconds of the video or near the end.
 
 ETSY LISTING
 - listing_title: up to 140 characters, natural and keyword-rich (e.g. "Crochet Pumpkin Pattern, 3 Sizes, Easy Fall Decor PDF ...").
@@ -71,6 +73,7 @@ const SCHEMA = {
                 source_time: { type: "string" },
                 photo: { type: "boolean" },
                 photo_time: { type: "string" },
+                photo_type: { type: "string", enum: ["result", "technique"] },
               },
               required: ["text", "source_time", "photo"],
             },
@@ -79,6 +82,7 @@ const SCHEMA = {
         required: ["heading", "steps"],
       },
     },
+    cover_time: { type: "string", description: "m:ss where the finished item(s) look best, for the cover photo" },
     etsy: {
       type: "object",
       properties: {
@@ -169,8 +173,10 @@ export function normalize(p) {
         source_time: String(st.source_time || ""),
         photo: !!st.photo,
         photo_time: st.photo_time ? String(st.photo_time) : "",
+        photo_type: st.photo_type === "technique" ? "technique" : "result",
       })),
     })),
+    cover_time: p.cover_time ? String(p.cover_time) : "",
     etsy: {
       listing_title: String(p.etsy?.listing_title || "").slice(0, 140),
       description: String(p.etsy?.description || ""),
@@ -192,7 +198,7 @@ export function patternToSteps(pattern, duration, makeId) {
     return {
       id: makeId(), section: sec, text: st.text, kind: "step",
       start: Number.isNaN(start) ? 0 : clamp(start), end: 0,
-      include: true, photo: st.photo,
+      include: true, photo: st.photo, photoType: st.photo_type || "result",
       customT: Number.isNaN(pt) ? null : clamp(pt),
       img: null, status: "",
     };
@@ -230,8 +236,9 @@ const TEMPLATE = {
   notes: ["..."],
   sections: [{
     heading: "Pumpkin Body",
-    steps: [{ text: "Row 1: ... (24 hdc)", source_time: "1:38", photo: true, photo_time: "2:00" }],
+    steps: [{ text: "Row 1: ... (24 hdc)", source_time: "1:38", photo: true, photo_time: "2:00", photo_type: "result | technique" }],
   }],
+  cover_time: "0:03",
   etsy: { listing_title: "...", description: "...", tags: ["13 tags, max 20 chars each"] },
 };
 
@@ -243,7 +250,7 @@ export function buildChatPrompt({ transcript, videoName, duration }) {
   return `${SYSTEM}
 
 OUTPUT FORMAT
-Reply with ONE JSON object only, inside a single \`\`\`json code block, with no other text before or after it. Do not create an artifact or file. Use exactly these keys (photo_time only when photo is true):
+Reply with ONE JSON object only, inside a single \`\`\`json code block, with no other text before or after it. Do not create an artifact or file. Use exactly these keys (photo_time and photo_type only when photo is true):
 ${JSON.stringify(TEMPLATE, null, 2)}
 
 ${header}

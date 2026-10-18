@@ -227,3 +227,29 @@ textarea, select, .field input { font: inherit; color: var(--text); background: 
 .chat-panel textarea { width: 100%; font: .85rem/1.4 ui-monospace, Menlo, monospace; resize: vertical; background: var(--card); }
 .other-ways { margin-top: 10px; }
 .other-ways summary { cursor: pointer; }
+
+/* ---------- Ham kare + Gemini düzeni ---------- */
+.step .ph-top { display: flex; align-items: center; gap: 4px; }
+.ptype { padding: 2px 7px; font-size: .72rem; border-radius: 20px; font-weight: 600; border: 1px solid var(--border); background: var(--field); color: var(--muted); }
+.ptype.technique { background: #e7eefb; color: #2f5bb7; border-color: #c7d6f3; }
+.ptype.result { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+@media (prefers-color-scheme: dark) { .ptype.technique { background: #1e2a44; color: #9bb8f0; border-color: #2c3c5e; } }
+.step .pic .badge { position: absolute; left: 3px; bottom: 3px; font-size: .62rem; font-weight: 700; padding: 0 4px; border-radius: 5px; }
+.badge.gem { background: #2e7d32; color: #fff; }
+.badge.raw { background: rgba(0,0,0,.55); color: #fff; }
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 8px; }
+.compare figure { margin: 0; }
+.compare figcaption { font-weight: 600; margin-bottom: 6px; font-size: .92rem; }
+#crop-canvas { cursor: crosshair; touch-action: none; }
+.gem-stage { min-height: 160px; background: var(--field); }
+.gem-stage img { max-width: 100%; max-height: 70vh; display: block; }
+@media (max-width: 640px) { .compare { grid-template-columns: 1fr; } }
+.howto { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 4px; }
+.howto code { font-size: .85em; background: var(--field); padding: 0 4px; border-radius: 4px; }
+#gem-drop { margin-top: 12px; }
+.cover-block { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.cover-row { display: grid; grid-template-columns: 220px 1fr; gap: 14px; align-items: start; }
+.cover-preview { aspect-ratio: 4 / 3; border: 1px solid var(--border); border-radius: 12px; display: grid; place-items: center; overflow: hidden; background: var(--field); }
+.cover-preview img { width: 100%; height: 100%; object-fit: contain; background: #fff; }
+.cover-actions .actions { margin-top: 8px; }
+@media (max-width: 560px) { .cover-row { grid-template-columns: 1fr; } }

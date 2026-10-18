@@ -1,20 +1,14 @@
-import { compose, parseTime, formatTime } from "./processing.js?v=20261018b";
-import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261018b";
+import { parseTime, formatTime, autoLevels } from "./processing.js?v=20261018c";
+import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261018c";
 import {
-  MODELS, writePattern, patternToSteps, buildChatPrompt, parseChatReply, linesToList, sizesToText, textToSizes, abbrToText, textToAbbr,
-} from "./pattern.js?v=20261018b";
+  MODELS, writePattern, patternToSteps, buildChatPrompt, parseChatReply,
+  linesToList, sizesToText, textToSizes, abbrToText, textToAbbr,
+} from "./pattern.js?v=20261018c";
+import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName } from "./gemini.js?v=20261018c";
 
-// ---- Dış kaynaklar (hepsi tarayıcıda çalışır) ----
-const MP_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1";
-const IMGLY_URLS = [
-  "https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/+esm",
-  "https://esm.sh/@imgly/background-removal@1.7.0",
-];
-const HAND_MODEL =
-  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
-const SKIN_MODEL =
-  "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite";
-const WORK_MAX = 1280; // İşleme çözünürlüğü (uzun kenar, piksel)
+const JSZIP_URL = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+const FRAME_MAX = 2400; // Ham karenin en fazla uzun kenarı (piksel)
+const OUT_MAX = 2000;   // Kırpılmış çıktının en fazla uzun kenarı
 
 const $ = (id) => document.getElementById(id);
 const video = $("video");
@@ -22,13 +16,11 @@ const els = Object.fromEntries([
   "file", "drop", "video-name", "transcript", "tfile", "parse", "msg",
   "steps-card", "steps-count", "frame-at", "add-step", "photo-none", "photo-auto", "steps",
   "extract", "extract-all", "cancel", "batch-msg",
-  "editor-card", "editor-title", "editor-close", "editor-text", "time", "use-current", "reextract", "scan",
-  "scan-strip", "progress", "editor-msg", "editor-body",
-  "tab-result", "tab-edit", "view-result", "view-edit", "result-stage", "result", "editor",
-  "brush-erase", "brush-keep", "brush-size", "brush-clear",
-  "expand", "skin", "arm", "fill", "reach", "clean", "transparent",
-  "dl-png", "dl-jpg", "dl-frame",
-  "pdf-card", "pdf-title", "pdf-intro", "pdf-author", "pdf-cover", "pdf-size", "print", "booklet",
+  "editor-card", "editor-title", "editor-close", "editor-text", "time", "use-current", "regrab", "photo-type",
+  "editor-msg", "crop-canvas", "crop-reset", "dl-raw", "gem-stage", "gem-img", "gem-empty", "copy-prompt", "gem-file", "gem-remove",
+  "gemini-card", "hands", "enhance", "dl-zip", "gem-status", "gem-drop", "gem-files", "gem-msg",
+  "pdf-card", "pdf-title", "pdf-intro", "pdf-author", "pdf-size", "print", "booklet",
+  "cover-img", "cover-empty", "cover-time", "cover-use-current", "cover-grab", "cover-dl", "cover-prompt", "cover-file",
   "project-save", "project-open", "ai-card", "ai-status", "api-key", "ai-model", "api-remember", "ai-write", "ai-cancel",
   "pdf-subtitle", "pdf-skill", "pdf-materials", "pdf-tools", "pdf-sizes", "pdf-abbr", "pdf-notes", "pdf-copyright",
   "etsy-card", "etsy-title", "etsy-title-len", "etsy-desc", "etsy-tags",
@@ -36,13 +28,14 @@ const els = Object.fromEntries([
 ].map((id) => [id.replace(/-(\w)/g, (_, c) => c.toUpperCase()), $(id)]));
 
 // ---- Durum ----
-/** @type {{id:number,start:number,end:number,text:string,kind:string,include:boolean,photo:boolean,customT:number|null,img:string|null,status:string,erase?:Uint8Array,keep?:Uint8Array,maskT?:number}[]} */
+// Adım: { id, section, text, kind, start, end, include, photo, photoType, customT, crop,
+//         rawBlob (tam kare), outBlob/outURL (kırpılmış ham), gemBlob/gemURL (Gemini), fileNo, status }
 let steps = [];
 let nextId = 1;
 let activeId = null;
-let S = null; // Açık adımın tam işleme durumu
 let cancelBatch = false;
 let batchRunning = false;
+const cover = { t: null, rawBlob: null, crop: null, outBlob: null, outURL: null, gemBlob: null, gemURL: null };
 
 // Video üzerinde aynı anda tek işlem (kare alma sırayla olmalı)
 let chain = Promise.resolve();
@@ -51,46 +44,6 @@ function exclusive(fn) {
   chain = p.catch(() => {});
   return p;
 }
-
-// =============== Model yükleyiciler (ilk ihtiyaçta, bir kez) ===============
-function once(fn) {
-  let p = null;
-  return () => (p ??= fn().catch((e) => { p = null; throw e; }));
-}
-const loadVision = once(async () => {
-  const mod = await import(`${MP_URL}/vision_bundle.mjs`);
-  const fileset = await mod.FilesetResolver.forVisionTasks(`${MP_URL}/wasm`);
-  return { mod, fileset };
-});
-async function createTask(Cls, fileset, opts) {
-  try {
-    return await Cls.createFromOptions(fileset, { ...opts, baseOptions: { ...opts.baseOptions, delegate: "GPU" } });
-  } catch {
-    return Cls.createFromOptions(fileset, { ...opts, baseOptions: { ...opts.baseOptions, delegate: "CPU" } });
-  }
-}
-const loadHands = once(async () => {
-  const { mod, fileset } = await loadVision();
-  return createTask(mod.HandLandmarker, fileset, {
-    baseOptions: { modelAssetPath: HAND_MODEL },
-    runningMode: "IMAGE", numHands: 2,
-    minHandDetectionConfidence: 0.3, minHandPresenceConfidence: 0.3, minTrackingConfidence: 0.3,
-  });
-});
-const loadSkin = once(async () => {
-  const { mod, fileset } = await loadVision();
-  return createTask(mod.ImageSegmenter, fileset, {
-    baseOptions: { modelAssetPath: SKIN_MODEL },
-    runningMode: "IMAGE", outputCategoryMask: false, outputConfidenceMasks: true,
-  });
-});
-const loadImgly = once(async () => {
-  let lastErr;
-  for (const url of IMGLY_URLS) {
-    try { return await import(url); } catch (e) { lastErr = e; }
-  }
-  throw lastErr;
-});
 
 // =============== Video ===============
 function openVideo(file) {
@@ -102,10 +55,12 @@ function openVideo(file) {
   video.hidden = false;
   els.drop.classList.add("compact");
   els.videoName.textContent = file.name;
-  if (!els.pdfTitle.value) els.pdfTitle.value = file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
-  for (const s of steps) { s.img = null; s.status = ""; s.erase = s.keep = undefined; }
+  // Yeni video: eski ham kareler geçersiz (Gemini görselleri kalır)
+  for (const s of steps) { s.rawBlob = null; setOut(s, null); s.status = ""; }
+  cover.rawBlob = null; setOut(cover, null);
   closeEditor();
   renderSteps();
+  renderCover();
 }
 video.addEventListener("loadedmetadata", () => setMsg(`Video yüklendi (${formatTime(Math.round(video.duration))}).`));
 video.addEventListener("error", () =>
@@ -125,7 +80,9 @@ function seek(t) {
     video.currentTime = t;
   });
 }
-async function grabFrame(t, maxSide) {
+
+/** Videodan t anındaki kareyi JPEG Blob olarak alır. */
+async function grabFrameBlob(t) {
   if (!video.duration) throw new Error("Önce videoyu seçin.");
   video.pause();
   await seek(Math.min(Math.max(0, t), video.duration - 0.05));
@@ -134,151 +91,52 @@ async function grabFrame(t, maxSide) {
   }
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) throw new Error("Videodan görüntü okunamadı.");
-  const s = Math.min(1, maxSide / Math.max(vw, vh));
+  const s = Math.min(1, FRAME_MAX / Math.max(vw, vh));
   const c = document.createElement("canvas");
   c.width = Math.round(vw * s);
   c.height = Math.round(vh * s);
   c.getContext("2d").drawImage(video, 0, 0, c.width, c.height);
-  return c;
+  return new Promise((r) => c.toBlob(r, "image/jpeg", 0.95));
 }
 
-// =============== Algılama ===============
-async function detectRaw(canvas) {
-  const [hands, skinSeg, { mod }] = await Promise.all([loadHands(), loadSkin(), loadVision()]);
-  const w = canvas.width, h = canvas.height;
-  const hr = hands.detect(canvas);
-  const sr = skinSeg.segment(canvas);
-  const masks = sr.confidenceMasks || [];
-  const skin = new Float32Array(w * h);
-  if (masks[2]) {
-    const mw = masks[2].width, mh = masks[2].height;
-    const body = masks[2].getAsFloat32Array();
-    const face = masks[3] ? masks[3].getAsFloat32Array() : null;
-    for (let y = 0; y < h; y++) {
-      const sy = Math.min(mh - 1, Math.floor((y * mh) / h));
-      for (let x = 0; x < w; x++) {
-        const j = sy * mw + Math.min(mw - 1, Math.floor((x * mw) / w));
-        skin[y * w + x] = face ? Math.max(body[j], face[j]) : body[j];
-      }
-    }
-  }
-  masks.forEach((m) => m.close?.());
-  sr.close?.();
-  return { landmarks: hr.landmarks || [], skin, connections: mod.HandLandmarker.HAND_CONNECTIONS };
-}
-
-function skinThreshold() {
-  const sens = +els.skin.value;
-  return sens === 0 ? Infinity : 0.9 - (sens / 100) * 0.6;
-}
-
-function buildHandMask(raw, w, h, arm) {
+/** Ham kareyi kırpar, isteğe bağlı ışık düzeltir; item.outBlob/outURL'i günceller. */
+async function renderOut(item) {
+  if (!item.rawBlob) { setOut(item, null); return; }
+  const bmp = await createImageBitmap(item.rawBlob);
+  const c0 = item.crop || { x: 0, y: 0, w: 1, h: 1 };
+  const sx = Math.round(c0.x * bmp.width), sy = Math.round(c0.y * bmp.height);
+  const sw = Math.max(8, Math.round(c0.w * bmp.width)), sh = Math.max(8, Math.round(c0.h * bmp.height));
+  const k = Math.min(1, OUT_MAX / Math.max(sw, sh));
   const c = document.createElement("canvas");
-  c.width = w; c.height = h;
+  c.width = Math.round(sw * k); c.height = Math.round(sh * k);
   const g = c.getContext("2d", { willReadFrequently: true });
-  g.fillStyle = g.strokeStyle = "#fff";
-  g.lineCap = g.lineJoin = "round";
-  for (const lm of raw.landmarks) {
-    const P = lm.map((p) => [p.x * w, p.y * h]);
-    const size = Math.hypot(P[9][0] - P[0][0], P[9][1] - P[0][1]);
-    if (size < 3) continue;
-    g.lineWidth = size * 0.28;
-    g.beginPath();
-    for (const { start, end } of raw.connections) { g.moveTo(...P[start]); g.lineTo(...P[end]); }
-    for (const [tip, dip] of [[4, 3], [8, 7], [12, 11], [16, 15], [20, 19]]) {
-      g.moveTo(...P[tip]);
-      g.lineTo(P[tip][0] + (P[tip][0] - P[dip][0]) * 0.45, P[tip][1] + (P[tip][1] - P[dip][1]) * 0.45);
-    }
-    g.stroke();
-    g.beginPath();
-    [0, 1, 2, 5, 9, 13, 17].forEach((k, i) => (i ? g.lineTo(...P[k]) : g.moveTo(...P[k])));
-    g.closePath();
-    g.fill();
-    if (arm) {
-      const dx = P[0][0] - P[9][0], dy = P[0][1] - P[9][1];
-      g.lineWidth = size * 0.85;
-      g.beginPath();
-      g.moveTo(...P[0]);
-      g.lineTo(P[0][0] + dx * 4, P[0][1] + dy * 4);
-      g.stroke();
-    }
+  g.drawImage(bmp, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  bmp.close?.();
+  if (els.enhance.checked) {
+    const img = g.getImageData(0, 0, c.width, c.height);
+    autoLevels(img.data, 0.7);
+    g.putImageData(img, 0, 0);
   }
-  const px = g.getImageData(0, 0, w, h).data;
-  const thr = skinThreshold();
-  const mask = new Uint8Array(w * h);
-  for (let i = 0; i < mask.length; i++) mask[i] = px[i * 4 + 3] > 127 || raw.skin[i] > thr ? 1 : 0;
-  return mask;
+  setOut(item, await new Promise((r) => c.toBlob(r, "image/jpeg", 0.92)));
 }
 
-async function removeBackground(canvas, onProgress) {
-  const imgly = await loadImgly();
-  const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
-  const out = await imgly.removeBackground(blob, {
-    output: { format: "image/png" },
-    progress: (key, cur, total) => {
-      if (key.startsWith("fetch") && total) onProgress?.(Math.round((cur / total) * 100));
-    },
-  });
-  const bmp = await createImageBitmap(out);
-  const c = document.createElement("canvas");
-  c.width = canvas.width; c.height = canvas.height;
-  const g = c.getContext("2d", { willReadFrequently: true });
-  g.drawImage(bmp, 0, 0, c.width, c.height);
-  const d = g.getImageData(0, 0, c.width, c.height).data;
-  const fg = new Float32Array(c.width * c.height);
-  for (let i = 0; i < fg.length; i++) fg[i] = d[i * 4 + 3] / 255;
-  return fg;
+function setOut(item, blob) {
+  if (item.outURL) URL.revokeObjectURL(item.outURL);
+  item.outBlob = blob;
+  item.outURL = blob ? URL.createObjectURL(blob) : null;
 }
-
-/** Bir zamandan tam işleme durumu üretir (kare + el + arka plan). */
-async function extractState(t, onStage) {
-  onStage?.(0);
-  const frame = await grabFrame(t, WORK_MAX);
-  const w = frame.width, h = frame.height;
-  onStage?.(1, "ilk seferde model indirilir");
-  const raw = await detectRaw(frame);
-  onStage?.(2, "ilk seferde model indirilir");
-  const fg = await removeBackground(frame, (pct) => onStage?.(2, `model indiriliyor %${pct}`));
-  onStage?.(3);
-  return {
-    t, w, h, frame, raw, fg,
-    rgba: frame.getContext("2d").getImageData(0, 0, w, h).data,
-    erase: new Uint8Array(w * h), keep: new Uint8Array(w * h),
-  };
+function setGem(item, blob) {
+  if (item.gemURL) URL.revokeObjectURL(item.gemURL);
+  item.gemBlob = blob;
+  item.gemURL = blob ? URL.createObjectURL(blob) : null;
 }
+function releaseStep(s) { setOut(s, null); setGem(s, null); s.rawBlob = null; }
+const finalURL = (item) => item.gemURL || item.outURL;
 
-function composeState(st) {
-  const big = Math.max(st.w, st.h);
-  const hand = buildHandMask(st.raw, st.w, st.h, els.arm.checked);
-  return compose({
-    w: st.w, h: st.h, rgba: st.rgba, fg: st.fg, hand, erase: st.erase, keep: st.keep,
-    expand: (+els.expand.value / 100) * big,
-    fill: els.fill.checked,
-    fillReach: (+els.reach.value / 100) * big,
-    minPart: els.clean.checked ? 0.04 : 0,
-    transparent: els.transparent.checked,
-  });
-}
-
-function drawResult(r, canvas, st) {
-  if (r.empty) {
-    canvas.width = st.w; canvas.height = st.h;
-    const g = canvas.getContext("2d");
-    g.fillStyle = "#fff";
-    g.fillRect(0, 0, st.w, st.h);
-  } else {
-    canvas.width = r.cropW; canvas.height = r.cropH;
-    canvas.getContext("2d").putImageData(new ImageData(r.data, r.cropW, r.cropH), 0, 0);
-  }
-}
-
-function canvasToURL(canvas) {
-  return new Promise((res) => canvas.toBlob((b) => res(URL.createObjectURL(b)), "image/png"));
-}
-
-function setStepImg(step, url) {
-  if (step.img) URL.revokeObjectURL(step.img);
-  step.img = url;
+function showWorkCards() {
+  els.stepsCard.hidden = false;
+  els.geminiCard.hidden = false;
+  els.pdfCard.hidden = false;
 }
 
 // =============== Transkript → adımlar ===============
@@ -294,6 +152,7 @@ els.parse.onclick = () => {
   if (!segs.length) return setMsg("Transkriptte zaman bilgisi bulunamadı. Satırlar \"0:12\" gibi zamanlarla başlamalı.", true);
   const firstStep = segs.findIndex((g) => classify(g.text) === "step");
   const intro = [];
+  steps.forEach(releaseStep);
   steps = segs.map((g, i) => {
     const kind = classify(g.text);
     const isIntro = i < firstStep && kind === "info";
@@ -301,7 +160,7 @@ els.parse.onclick = () => {
     return {
       id: nextId++, start: g.start, end: g.end, text: g.text, kind,
       include: kind !== "noise" && !isIntro,
-      photo: wantsPhoto(g.text), customT: null, img: null, status: "",
+      photo: wantsPhoto(g.text), photoType: "result", customT: null, status: "",
     };
   });
   // Aynı cümle tekrar ediyorsa yalnızca ilkinin fotoğrafı
@@ -313,8 +172,7 @@ els.parse.onclick = () => {
     seen.add(key);
   }
   if (!els.pdfIntro.value && intro.length) els.pdfIntro.value = intro.join("\n");
-  els.stepsCard.hidden = false;
-  els.pdfCard.hidden = false;
+  showWorkCards();
   closeEditor();
   renderSteps();
   const ph = steps.filter((s) => s.photo).length;
@@ -425,8 +283,10 @@ const DEFAULT_COPYRIGHT = (author) =>
   `Please do not copy, share, resell or distribute this PDF. You are welcome to sell items you make from it; please credit the designer.`;
 
 function applyPattern(p) {
-  for (const s of steps) if (s.img) URL.revokeObjectURL(s.img);
+  steps.forEach(releaseStep);
   steps = patternToSteps(p, video.duration || 0, () => nextId++);
+  const ct = parseTime(p.cover_time);
+  if (!Number.isNaN(ct)) { els.coverTime.value = formatTime(ct); cover.t = ct; setOut(cover, null); cover.rawBlob = null; }
   els.pdfTitle.value = p.title;
   els.pdfSubtitle.value = p.subtitle;
   els.pdfIntro.value = p.description;
@@ -438,10 +298,10 @@ function applyPattern(p) {
   els.pdfNotes.value = p.notes.join("\n");
   if (!els.pdfCopyright.value) els.pdfCopyright.value = DEFAULT_COPYRIGHT(els.pdfAuthor.value.trim());
   setEtsy(p.etsy);
-  els.stepsCard.hidden = false;
-  els.pdfCard.hidden = false;
+  showWorkCards();
   closeEditor();
   renderSteps();
+  renderCover();
 }
 
 // =============== Etsy ilanı ===============
@@ -467,6 +327,8 @@ els.pdfAuthor.addEventListener("change", () => {
   }
 });
 
+
+// =============== Adım listesi ===============
 function frameTime(s) {
   if (s.customT != null) return s.customT;
   const mode = els.frameAt.value;
@@ -475,24 +337,41 @@ function frameTime(s) {
   return Math.max(s.start, s.end - 0.7);
 }
 
-const esc = (t) => t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const stepById = (id) => steps.find((s) => s.id === +id);
+
+/** PDF'teki adım numaraları (dosya adları da bunu kullanır). */
+function stepNumbers() {
+  const map = new Map();
+  let n = 0;
+  for (const s of steps) {
+    if (!s.include || !s.text.trim()) continue;
+    if (s.kind === "info" && !(s.photo && finalURL(s))) continue;
+    map.set(s.id, ++n);
+  }
+  return map;
+}
+const fileNoOf = (s) => s.fileNo ?? stepNumbers().get(s.id);
 
 function picHTML(s) {
-  if (s.img) return `<img alt="" src="${s.img}">${s.status === "warn" ? '<span class="warn-badge" title="Kontrol edin">⚠</span>' : ""}`;
+  const url = finalURL(s);
+  if (url) return `<img alt="" src="${url}"><span class="badge ${s.gemURL ? "gem" : "raw"}">${s.gemURL ? "Gemini" : "ham"}</span>`;
   if (s.status === "working") return "";
   if (s.status === "error") return "hata";
   return s.photo ? "bekliyor" : "—";
 }
 
 function stepRowHTML(s) {
-  const pic = picHTML(s);
   return `
     <label class="chk" title="PDF'e ekle"><input type="checkbox" class="inc" ${s.include ? "checked" : ""}></label>
     <button type="button" class="ts" title="Videoda bu ana git">${formatTime(Math.floor(s.start))}</button>
     <textarea class="txt" rows="2">${esc(s.text)}</textarea>
     <div class="ph">
-      <label class="photo-lbl" title="Fotoğraf çıkar"><input type="checkbox" class="photo" ${s.photo ? "checked" : ""}>📷</label>
-      <button type="button" class="pic ${s.status}" title="Fotoğrafı aç / düzenle">${pic}</button>
+      <div class="ph-top">
+        <label class="photo-lbl" title="Fotoğraf olsun"><input type="checkbox" class="photo" ${s.photo ? "checked" : ""}>📷</label>
+        <button type="button" class="ptype ${s.photoType}" title="Sonuç / teknik">${s.photoType === "technique" ? "teknik" : "sonuç"}</button>
+      </div>
+      <button type="button" class="pic ${s.status || ""}" title="Fotoğrafı aç / düzenle">${picHTML(s)}</button>
     </div>
     <button type="button" class="merge" title="Üstteki adımla birleştir">⤒</button>`;
 }
@@ -504,63 +383,58 @@ function rowClass(s) {
 function renderSteps() {
   let html = "";
   let lastSec;
-  steps.forEach((s, i) => {
+  for (const s of steps) {
     if (s.section && s.section !== lastSec) {
       html += `<li class="sec" data-first="${s.id}"><input class="sec-input" value="${esc(s.section)}" aria-label="Bölüm başlığı"></li>`;
     }
     lastSec = s.section;
     html += `<li class="${rowClass(s)}" data-id="${s.id}">${stepRowHTML(s)}</li>`;
-  });
+  }
   els.steps.innerHTML = html;
   updateCounts();
 }
 
-// Bölüm başlığını düzenleme: aynı bölümdeki ardışık adımların hepsine uygula
-els.steps.addEventListener("input", (e) => {
-  if (!e.target.classList.contains("sec-input")) return;
-  const first = stepById(e.target.closest("li.sec").dataset.first);
-  const i = steps.indexOf(first);
-  const old = first.section;
-  for (let k = i; k < steps.length && steps[k].section === old; k++) steps[k].section = e.target.value;
-});
-
 function updateRow(s) {
-  const li = els.steps.querySelector(`[data-id="${s.id}"]`);
+  const li = els.steps.querySelector(`li.step[data-id="${s.id}"]`);
   if (!li) return;
   li.className = rowClass(s);
   const pic = li.querySelector(".pic");
-  pic.className = `pic ${s.status}`;
+  pic.className = `pic ${s.status || ""}`;
   pic.innerHTML = picHTML(s);
   li.querySelector(".photo").checked = s.photo;
   li.querySelector(".inc").checked = s.include;
+  const pt = li.querySelector(".ptype");
+  pt.className = `ptype ${s.photoType}`;
+  pt.textContent = s.photoType === "technique" ? "teknik" : "sonuç";
 }
 
 function updateCounts() {
   const inc = steps.filter((s) => s.include).length;
   const ph = steps.filter((s) => s.include && s.photo);
-  const missing = ph.filter((s) => !s.img).length;
-  const warn = ph.filter((s) => s.img && (s.status === "warn" || s.status === "error")).length;
+  const missing = ph.filter((s) => !s.rawBlob && !s.gemURL).length;
+  const gem = ph.filter((s) => s.gemURL).length;
   const checks = steps.filter((s) => s.include && /\[CHECK/i.test(s.text)).length;
-  els.stepsCount.textContent = `${inc} adım PDF'te · ${ph.length} fotoğraf` +
-    (warn ? ` · ⚠ ${warn} fotoğrafa bakın` : "") + (checks ? ` · ${checks} [CHECK] notu` : "");
-  els.extract.textContent = missing ? `Fotoğrafları çıkar (${missing})` : "Fotoğraflar hazır ✓";
+  els.stepsCount.textContent = `${inc} adım PDF'te · ${ph.length} fotoğraf` + (checks ? ` · ${checks} [CHECK] notu` : "");
+  els.extract.textContent = missing ? `Kareleri al (${missing})` : "Kareler hazır ✓";
   els.extract.disabled = batchRunning || !missing;
   els.extractAll.disabled = batchRunning || !ph.length;
-  updateCoverOptions();
+  els.gemStatus.textContent = ph.length ? `${gem}/${ph.length} fotoğrafın Gemini görseli yüklendi${cover.gemURL ? " · kapak ✓" : ""}` : "";
 }
-
-const stepById = (id) => steps.find((s) => s.id === +id);
 
 els.steps.addEventListener("click", (e) => {
   const li = e.target.closest("li.step");
   if (!li) return;
   const s = stepById(li.dataset.id);
   if (e.target.closest(".ts")) {
-    if (video.duration) { video.currentTime = s.start; }
+    if (video.duration) video.currentTime = s.start;
   } else if (e.target.closest(".pic")) {
     openStep(s);
   } else if (e.target.closest(".merge")) {
     mergeUp(s);
+  } else if (e.target.closest(".ptype")) {
+    s.photoType = s.photoType === "technique" ? "result" : "technique";
+    updateRow(s);
+    if (s.id === activeId) els.photoType.value = s.photoType;
   }
 });
 els.steps.addEventListener("change", (e) => {
@@ -573,6 +447,12 @@ els.steps.addEventListener("change", (e) => {
   updateCounts();
 });
 els.steps.addEventListener("input", (e) => {
+  if (e.target.classList.contains("sec-input")) {
+    const first = stepById(e.target.closest("li.sec").dataset.first);
+    const old = first.section;
+    for (let k = steps.indexOf(first); k < steps.length && steps[k].section === old; k++) steps[k].section = e.target.value;
+    return;
+  }
   if (!e.target.classList.contains("txt")) return;
   const li = e.target.closest("li.step");
   const s = stepById(li.dataset.id);
@@ -589,9 +469,19 @@ function mergeUp(s) {
   prev.text = `${prev.text} ${s.text}`.trim();
   prev.end = s.end;
   prev.include = prev.include || s.include;
-  prev.photo = prev.photo || s.photo;
   if (prev.kind !== "step" && s.kind === "step") prev.kind = "step";
-  if (s.img) { setStepImg(prev, s.img); s.img = null; prev.customT = s.customT; prev.erase = s.erase; prev.keep = s.keep; prev.maskT = s.maskT; }
+  // Birleşen adımın karesi (işin bittiği an) daha anlamlı: onu taşı
+  if (s.photo && (s.rawBlob || s.gemURL)) {
+    releaseStep(prev);
+    Object.assign(prev, {
+      photo: true, photoType: s.photoType, customT: s.customT, crop: s.crop,
+      rawBlob: s.rawBlob, outBlob: s.outBlob, outURL: s.outURL, gemBlob: s.gemBlob, gemURL: s.gemURL,
+    });
+    s.outURL = s.gemURL = null;
+  } else {
+    prev.photo = prev.photo || s.photo;
+    releaseStep(s);
+  }
   steps.splice(i, 1);
   if (activeId === s.id) closeEditor();
   renderSteps();
@@ -600,11 +490,14 @@ function mergeUp(s) {
 els.addStep.onclick = () => {
   if (!video.duration) return setMsg("Önce videoyu seçin.", true);
   const t = Math.round(video.currentTime * 10) / 10;
-  const s = { id: nextId++, start: t, end: t + 3, text: "", kind: "step", include: true, photo: true, customT: t, img: null, status: "" };
   const at = steps.findIndex((x) => x.start > t);
+  const before = steps[(at < 0 ? steps.length : at) - 1];
+  const s = {
+    id: nextId++, section: before?.section || "", start: t, end: t + 3, text: "", kind: "step",
+    include: true, photo: true, photoType: "result", customT: t, crop: null, status: "",
+  };
   steps.splice(at < 0 ? steps.length : at, 0, s);
-  els.stepsCard.hidden = false;
-  els.pdfCard.hidden = false;
+  showWorkCards();
   renderSteps();
   els.steps.querySelector(`[data-id="${s.id}"] .txt`)?.focus();
   openStep(s);
@@ -621,346 +514,370 @@ els.photoAuto.onclick = () => {
 };
 els.frameAt.onchange = () => updateCounts();
 
-// =============== Toplu çıkarma ===============
+// =============== Kareleri toplu alma ===============
+async function grabStep(s) {
+  const t = frameTime(s);
+  s.rawBlob = await exclusive(() => grabFrameBlob(t));
+  s.rawT = t;
+  await renderOut(s);
+}
+
 async function runBatch(redoAll) {
   if (!video.duration) return setMsg("Önce videoyu seçin.", true);
-  const list = steps.filter((s) => s.include && s.photo && (redoAll || !s.img));
+  const list = steps.filter((s) => s.include && s.photo && (redoAll || (!s.rawBlob && !s.gemURL)));
   if (!list.length) return;
   batchRunning = true;
   cancelBatch = false;
   els.cancel.hidden = false;
   updateCounts();
-  let done = 0, failed = 0;
+  let done = 0;
   for (const s of list) {
     if (cancelBatch) break;
     s.status = "working";
     updateRow(s);
-    els.batchMsg.textContent = `${done + 1}/${list.length} işleniyor… (${formatTime(Math.floor(frameTime(s)))})`;
+    els.batchMsg.textContent = `${done + 1}/${list.length} kare alınıyor…`;
     try {
-      await exclusive(async () => {
-        const st = await extractState(frameTime(s), (i, note) => {
-          if (i === 2 && note?.includes("%")) els.batchMsg.textContent = `Arka plan modeli indiriliyor… ${note.match(/%\d+/)[0]}`;
-        });
-        s.erase = st.erase; s.keep = st.keep; s.maskT = st.t;
-        const r = composeState(st);
-        const c = document.createElement("canvas");
-        drawResult(r, c, st);
-        setStepImg(s, await canvasToURL(c));
-        s.status = r.empty ? "error" : r.suspicious ? "warn" : "";
-        if (r.empty || r.suspicious) failed++;
-      });
+      await grabStep(s);
+      s.status = "";
     } catch (e) {
       console.error(e);
       s.status = "error";
-      failed++;
-      if (/indirilemedi|fetch|import/i.test(friendly(e))) { setMsg(friendly(e), true); break; }
     }
     done++;
     updateRow(s);
     updateCounts();
   }
+  if (cover.t != null && !cover.rawBlob && !cancelBatch) await grabCover().catch(() => {});
   batchRunning = false;
   els.cancel.hidden = true;
   els.batchMsg.textContent = cancelBatch ? "Durduruldu." :
-    `${done} fotoğraf hazır${failed ? `. ⚠ ${failed} tanesine bakmanız iyi olur (işaretli olanlara dokunun)` : ""}.`;
+    `${done} kare hazır. Fotoğrafa dokunarak kırpabilir, sonra 3. bölümden Gemini için indirebilirsiniz.`;
   updateCounts();
 }
 els.extract.onclick = () => runBatch(false);
 els.extractAll.onclick = () => runBatch(true);
 els.cancel.onclick = () => { cancelBatch = true; els.batchMsg.textContent = "Durduruluyor…"; };
 
-// =============== Tek adım düzenleyici ===============
-const STEPS_UI = ["Kare alınıyor", "Eller aranıyor", "Arka plan kaldırılıyor", "Sonuç hazırlanıyor"];
-function showProgress(active, note = "") {
-  els.progress.hidden = false;
-  els.progress.innerHTML = STEPS_UI.map((s, i) =>
-    `<li class="${i < active ? "done" : i === active ? "active" : ""}">${s}${i === active && note ? ` — ${note}` : ""}</li>`
-  ).join("");
-}
+// =============== Tek adım: kırpma ve Gemini görseli ===============
+let cropBmp = null;   // Açık adımın ham karesi (çizim için)
+let dragStart = null;
+let dragRect = null;
 
 function activeStep() { return stepById(activeId); }
 
-function openStep(s) {
+async function openStep(s) {
   activeId = s.id;
-  S = null;
   els.editorCard.hidden = false;
-  els.editorBody.hidden = true;
-  els.scanStrip.hidden = true;
-  const n = steps.filter((x) => x.include).indexOf(s) + 1;
+  const n = stepNumbers().get(s.id);
   els.editorTitle.textContent = `${n ? `Adım ${n}` : "Adım"} · ${formatTime(Math.floor(s.start))}`;
   els.editorText.textContent = s.text;
   els.time.value = formatTime(Math.round(frameTime(s) * 10) / 10);
+  els.photoType.value = s.photoType;
   setEditorMsg("");
-  for (const li of els.steps.children) li.classList.toggle("active", +li.dataset.id === s.id);
+  for (const li of els.steps.querySelectorAll("li.step")) li.classList.toggle("active", +li.dataset.id === s.id);
+  renderGem(s);
   els.editorCard.scrollIntoView({ behavior: "smooth", block: "start" });
-  if (video.duration) loadIntoEditor(s, frameTime(s));
-  else setEditorMsg("Fotoğraf çıkarmak için önce videoyu seçin.", true);
+  if (!s.rawBlob && video.duration) {
+    setEditorMsg("Kare alınıyor…");
+    try { await grabStep(s); setEditorMsg(""); updateRow(s); updateCounts(); }
+    catch (e) { setEditorMsg(e.message, true); }
+  } else if (!s.rawBlob) {
+    setEditorMsg("Ham kare için önce videoyu seçin.", true);
+  }
+  if (activeId === s.id) await loadCropCanvas(s);
 }
 
 function closeEditor() {
   activeId = null;
-  S = null;
+  cropBmp?.close?.();
+  cropBmp = null;
   els.editorCard.hidden = true;
-  for (const li of els.steps.children) li.classList.remove("active");
+  for (const li of els.steps.querySelectorAll("li.step")) li.classList.remove("active");
 }
 els.editorClose.onclick = closeEditor;
 
-async function loadIntoEditor(s, t) {
-  setEditorMsg("");
-  try {
-    await exclusive(async () => {
-      if (activeId !== s.id) return;
-      const st = await extractState(t, showProgress);
-      if (activeId !== s.id) return;
-      if (s.erase && s.maskT === t && s.erase.length === st.erase.length) { st.erase = s.erase; st.keep = s.keep; }
-      s.erase = st.erase; s.keep = st.keep; s.maskT = t;
-      S = st;
-      els.progress.hidden = true;
-      els.editorBody.hidden = false;
-      recompose();
-      const n = st.raw.landmarks.length;
-      if (!lastResult?.empty) {
-        setEditorMsg(n ? `${n} el bulundu ve silindi.` : `Karede el işareti bulunamadı. El kaldıysa "Elle düzelt" sekmesinden silin.`);
-      }
-    });
-  } catch (e) {
-    console.error(e);
-    els.progress.hidden = true;
-    setEditorMsg(friendly(e), true);
+async function loadCropCanvas(s) {
+  cropBmp?.close?.();
+  cropBmp = s.rawBlob ? await createImageBitmap(s.rawBlob) : null;
+  drawCrop(s.crop);
+}
+
+function drawCrop(rect) {
+  const c = els.cropCanvas;
+  const g = c.getContext("2d");
+  if (!cropBmp) { c.width = 320; c.height = 180; g.clearRect(0, 0, c.width, c.height); return; }
+  const k = Math.min(1, 1100 / cropBmp.width);
+  c.width = Math.round(cropBmp.width * k);
+  c.height = Math.round(cropBmp.height * k);
+  g.drawImage(cropBmp, 0, 0, c.width, c.height);
+  if (rect) {
+    const x = rect.x * c.width, y = rect.y * c.height, w = rect.w * c.width, h = rect.h * c.height;
+    g.fillStyle = "rgba(0,0,0,.55)";
+    g.fillRect(0, 0, c.width, y);
+    g.fillRect(0, y + h, c.width, c.height - y - h);
+    g.fillRect(0, y, x, h);
+    g.fillRect(x + w, y, c.width - x - w, h);
+    g.strokeStyle = "#fff";
+    g.lineWidth = 2;
+    g.strokeRect(x, y, w, h);
   }
 }
 
-let lastResult = null;
-function recompose() {
-  if (!S) return;
-  lastResult = composeState(S);
-  drawResult(lastResult, els.result, S);
-  els.resultStage.classList.toggle("checker", els.transparent.checked);
-  if (lastResult.empty) setEditorMsg("Karede ürün bulunamadı. Başka bir an deneyin ya da \"Elle düzelt\" ile ürünü geri getirin.", true);
-  if (!els.viewEdit.hidden) renderEditor();
-  scheduleSave();
+function canvasPoint(e) {
+  const r = els.cropCanvas.getBoundingClientRect();
+  return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))];
 }
-
-let saveTimer;
-function scheduleSave() {
-  clearTimeout(saveTimer);
+els.cropCanvas.addEventListener("pointerdown", (e) => {
+  if (!cropBmp) return;
+  els.cropCanvas.setPointerCapture(e.pointerId);
+  dragStart = canvasPoint(e);
+  dragRect = null;
+});
+els.cropCanvas.addEventListener("pointermove", (e) => {
+  if (!dragStart) return;
+  const p = canvasPoint(e);
+  dragRect = { x: Math.min(p[0], dragStart[0]), y: Math.min(p[1], dragStart[1]), w: Math.abs(p[0] - dragStart[0]), h: Math.abs(p[1] - dragStart[1]) };
+  drawCrop(dragRect);
+});
+async function endCrop() {
+  if (!dragStart) return;
+  dragStart = null;
   const s = activeStep();
-  if (!s || !S) return;
-  saveTimer = setTimeout(async () => {
-    if (activeStep() !== s || !lastResult) return;
-    setStepImg(s, await canvasToURL(els.result));
-    s.status = lastResult.empty ? "error" : "";  // Elle bakıldığı için uyarı kaldırılır
-    if (S.t !== frameTimeAuto(s)) s.customT = S.t;
-    updateRow(s);
-    updateCounts();
-  }, 250);
+  if (!s) return;
+  if (!dragRect || dragRect.w < 0.05 || dragRect.h < 0.05) { drawCrop(s.crop); return; }
+  s.crop = dragRect;
+  await renderOut(s);
+  updateRow(s);
+  setEditorMsg("Kırpıldı. Gemini'ye bu kırpılmış hali gider.");
 }
-function frameTimeAuto(s) { const c = s.customT; s.customT = null; const t = frameTime(s); s.customT = c; return t; }
-
-let recomposeTimer;
-function scheduleRecompose() { clearTimeout(recomposeTimer); recomposeTimer = setTimeout(recompose, 120); }
+els.cropCanvas.addEventListener("pointerup", endCrop);
+els.cropCanvas.addEventListener("pointercancel", endCrop);
+els.cropReset.onclick = async () => {
+  const s = activeStep();
+  if (!s) return;
+  s.crop = null;
+  drawCrop(null);
+  await renderOut(s);
+  updateRow(s);
+};
 
 els.useCurrent.onclick = () => { els.time.value = formatTime(Math.round(video.currentTime * 10) / 10); };
-els.reextract.onclick = () => {
+els.regrab.onclick = async () => {
   const s = activeStep();
   if (!s) return;
   const t = parseTime(els.time.value);
   if (Number.isNaN(t)) return setEditorMsg("Zamanı dakika:saniye olarak yazın, ör. 03:15", true);
   if (video.duration && t > video.duration) return setEditorMsg("Bu zaman videonun süresinden uzun.", true);
   s.customT = t;
-  loadIntoEditor(s, t);
+  setEditorMsg("Kare alınıyor…");
+  try {
+    await grabStep(s);
+    await loadCropCanvas(s);
+    updateRow(s);
+    updateCounts();
+    setEditorMsg(s.gemURL ? "Yeni kare alındı. Gemini görseli eski kareden; gerekirse yeniden yükleyin." : "Yeni kare alındı.");
+  } catch (e) { setEditorMsg(e.message, true); }
 };
-els.time.addEventListener("keydown", (e) => { if (e.key === "Enter") els.reextract.click(); });
-
-els.scan.onclick = async () => {
+els.time.addEventListener("keydown", (e) => { if (e.key === "Enter") els.regrab.click(); });
+els.photoType.onchange = () => {
   const s = activeStep();
   if (!s) return;
-  const t0 = parseTime(els.time.value);
-  if (Number.isNaN(t0)) return setEditorMsg("Zamanı dakika:saniye olarak yazın, ör. 03:15", true);
-  els.scanStrip.hidden = false;
-  els.scanStrip.innerHTML = "";
-  els.scan.disabled = true;
+  s.photoType = els.photoType.value;
+  updateRow(s);
+};
+
+function renderGem(s) {
+  const has = !!s?.gemURL;
+  els.gemImg.hidden = !has;
+  els.gemEmpty.hidden = has;
+  els.gemRemove.hidden = !has;
+  if (has) els.gemImg.src = s.gemURL; else els.gemImg.removeAttribute("src");
+}
+
+function geminiPromptFor(s) {
+  return buildGeminiPrompt({ type: s.photoType, text: s.text, hands: els.hands.value, title: els.pdfTitle.value.trim() });
+}
+
+els.copyPrompt.onclick = async () => {
+  const s = activeStep();
+  if (!s) return;
+  await copyText(geminiPromptFor(s), els.copyPrompt);
+};
+els.dlRaw.onclick = () => {
+  const s = activeStep();
+  if (!s?.outBlob) return setEditorMsg("Önce kare alınmalı.", true);
+  saveBlob(s.outBlob, `${fileNameFor(fileNoOf(s) || 0)}.jpg`);
+};
+els.gemFile.addEventListener("change", () => {
+  const s = activeStep();
+  const f = els.gemFile.files[0];
+  els.gemFile.value = "";
+  if (!s || !f) return;
+  setGem(s, f);
+  renderGem(s);
+  updateRow(s);
+  updateCounts();
+  setEditorMsg("Gemini görseli bu adıma eklendi. Ham kareyle karşılaştırıp ilmeklerin ve tekniğin değişmediğini kontrol edin.");
+});
+els.gemRemove.onclick = () => {
+  const s = activeStep();
+  if (!s) return;
+  setGem(s, null);
+  renderGem(s);
+  updateRow(s);
+  updateCounts();
+};
+
+// =============== Gemini: toplu indirme ve yükleme ===============
+els.hands.innerHTML = HAND_OPTIONS.map((h) => `<option value="${h.id}">${h.label}</option>`).join("");
+els.hands.value = store.get("uk_hands") || "replace";
+els.hands.onchange = () => store.set("uk_hands", els.hands.value);
+els.enhance.checked = store.get("uk_enhance") !== "0";
+els.enhance.onchange = async () => {
+  store.set("uk_enhance", els.enhance.checked ? "1" : "0");
+  for (const s of steps) if (s.rawBlob) { await renderOut(s); updateRow(s); }
+  if (cover.rawBlob) { await renderOut(cover); renderCover(); }
+};
+
+let jszipP = null;
+function loadJSZip() {
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  return (jszipP ??= new Promise((res, rej) => {
+    const sc = document.createElement("script");
+    sc.src = JSZIP_URL;
+    sc.onload = () => res(window.JSZip);
+    sc.onerror = () => { jszipP = null; rej(new Error("Zip aracı yüklenemedi. İnternet bağlantınızı kontrol edin.")); };
+    document.head.appendChild(sc);
+  }));
+}
+
+els.dlZip.onclick = async () => {
+  const list = steps.filter((s) => s.include && s.photo);
+  if (!list.length) return setGemMsg("Fotoğraflı adım yok.", true);
+  const missing = list.filter((s) => !s.outBlob).length;
+  if (missing) {
+    if (!video.duration) return setGemMsg("Önce videoyu seçip kareleri alın.", true);
+    setGemMsg(`Önce ${missing} kare alınıyor…`);
+    await runBatch(false);
+  }
+  if (cover.t != null && !cover.outBlob && video.duration) await grabCover().catch(() => {});
   try {
-    await exclusive(async () => {
-      const times = [];
-      for (let d = -3; d <= 3.001; d += 0.5) {
-        const tt = Math.round((t0 + d) * 10) / 10;
-        if (tt >= 0 && tt <= video.duration - 0.05) times.push(tt);
-      }
-      const items = [];
-      for (const [i, tt] of times.entries()) {
-        setEditorMsg(`Yakındaki kareler taranıyor… ${i + 1}/${times.length}`);
-        const c = await grabFrame(tt, 480);
-        const raw = await detectRaw(c);
-        const hand = buildHandMask(raw, c.width, c.height, false);
-        let count = 0;
-        for (const v of hand) count += v;
-        const cover = count / hand.length;
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "thumb";
-        btn.innerHTML = `<img alt="" src="${c.toDataURL("image/jpeg", 0.7)}"><span>${formatTime(tt)} · el %${Math.round(cover * 100)}</span>`;
-        btn.onclick = () => { els.time.value = formatTime(tt); s.customT = tt; loadIntoEditor(s, tt); };
-        els.scanStrip.appendChild(btn);
-        items.push({ btn, cover, tt });
-      }
-      const best = items.reduce((a, b) => (b.cover < a.cover ? b : a), items[0]);
-      if (best) {
-        best.btn.classList.add("best");
-        best.btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
-        setEditorMsg(`Ellerin en az göründüğü an: ${formatTime(best.tt)}. Bir kareye dokunarak onu kullanın.`);
-      }
-    });
-  } catch (e) {
-    console.error(e);
-    setEditorMsg(friendly(e), true);
-  } finally {
-    els.scan.disabled = false;
-  }
-};
-
-// ---- Elle düzeltme ----
-let brush = "erase";
-let editorFrame = 0;
-function renderEditor() {
-  if (!S || !lastResult) return;
-  const c = els.editor;
-  if (c.width !== S.w || c.height !== S.h) { c.width = S.w; c.height = S.h; }
-  const img = new ImageData(S.w, S.h);
-  const d = img.data, src = S.rgba, rem = lastResult.remove, al = lastResult.alpha;
-  for (let i = 0; i < S.w * S.h; i++) {
-    const k = i * 4;
-    let r = src[k], g = src[k + 1], b = src[k + 2];
-    if (S.keep[i]) { r = r * 0.45 + 40; g = g * 0.45 + 160; b = b * 0.45 + 60; }
-    else if (S.erase[i] || rem[i]) { r = r * 0.45 + 200; g = g * 0.45 + 30; b = b * 0.45 + 30; }
-    else if (al[i] < 0.5) { r = r * 0.35 + 150; g = g * 0.35 + 150; b = b * 0.35 + 150; }
-    d[k] = r; d[k + 1] = g; d[k + 2] = b; d[k + 3] = 255;
-  }
-  c.getContext("2d").putImageData(img, 0, 0);
-}
-function requestEditorRender() {
-  if (editorFrame) return;
-  editorFrame = requestAnimationFrame(() => { editorFrame = 0; renderEditor(); });
-}
-function paintDot(cx, cy, r) {
-  const target = brush === "erase" ? S.erase : S.keep;
-  const other = brush === "erase" ? S.keep : S.erase;
-  const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(S.w - 1, Math.ceil(cx + r));
-  const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(S.h - 1, Math.ceil(cy + r));
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      if ((x - cx) ** 2 + (y - cy) ** 2 <= r * r) { const i = y * S.w + x; target[i] = 1; other[i] = 0; }
+    setGemMsg("Zip hazırlanıyor…");
+    const JSZip = await loadJSZip();
+    const zip = new JSZip();
+    const nums = stepNumbers();
+    const title = els.pdfTitle.value.trim();
+    const lines = [
+      `GEMINI KOMUTLARI — ${title || "tarif"}`,
+      "Her görseli Gemini'ye yükleyin, altındaki komutu yapıştırın ve sonucu indirin.",
+      "İndirdiğiniz dosyayı aynı adla (ör. adim-05.png) kaydederseniz uygulama doğru adıma yerleştirir.",
+      "",
+    ];
+    if (cover.outBlob) {
+      zip.file("kapak.jpg", cover.outBlob);
+      lines.push("==================== kapak.jpg ====================", buildCoverPrompt({ title }), "");
     }
+    for (const s of list) {
+      if (!s.outBlob) continue;
+      s.fileNo = nums.get(s.id);
+      const name = fileNameFor(s.fileNo);
+      zip.file(`${name}.jpg`, s.outBlob);
+      lines.push(`==================== ${name}.jpg (${s.photoType === "technique" ? "teknik" : "sonuç"}) ====================`,
+        geminiPromptFor(s), "");
+    }
+    zip.file("GEMINI-KOMUTLARI.txt", lines.join("\n"));
+    const blob = await zip.generateAsync({ type: "blob" });
+    saveBlob(blob, `${(title || "tarif").replace(/[\\/:*?"<>|]+/g, "").slice(0, 60)}-kareler.zip`);
+    setGemMsg("İndirildi. Zip'i açın; GEMINI-KOMUTLARI.txt her görselin komutunu içeriyor.");
+  } catch (e) {
+    setGemMsg(e.message, true);
   }
-}
-let lastPt = null;
-function toImage(e) {
-  const rect = els.editor.getBoundingClientRect();
-  return [((e.clientX - rect.left) * S.w) / rect.width, ((e.clientY - rect.top) * S.h) / rect.height];
-}
-function brushRadius() { return (+els.brushSize.value * Math.max(S.w, S.h)) / 200; }
-els.editor.addEventListener("pointerdown", (e) => {
-  if (!S) return;
-  els.editor.setPointerCapture(e.pointerId);
-  lastPt = toImage(e);
-  paintDot(...lastPt, brushRadius());
-  requestEditorRender();
-});
-els.editor.addEventListener("pointermove", (e) => {
-  if (!lastPt || !S) return;
-  const p = toImage(e), r = brushRadius();
-  const steps_ = Math.max(1, Math.ceil(Math.hypot(p[0] - lastPt[0], p[1] - lastPt[1]) / (r / 2)));
-  for (let i = 1; i <= steps_; i++) {
-    paintDot(lastPt[0] + ((p[0] - lastPt[0]) * i) / steps_, lastPt[1] + ((p[1] - lastPt[1]) * i) / steps_, r);
+};
+
+function assignGeminiFiles(files) {
+  const nums = stepNumbers();
+  const byNo = new Map();
+  for (const s of steps) if (s.include && s.photo) byNo.set(s.fileNo ?? nums.get(s.id), s);
+  const unnamed = [];
+  let placed = 0, coverSet = false;
+  for (const f of files) {
+    const no = numberFromFileName(f.name);
+    if (no === 0) { setGem(cover, f); coverSet = true; placed++; continue; }
+    const s = no != null ? byNo.get(no) : null;
+    if (s) { setGem(s, f); placed++; } else unnamed.push(f);
   }
-  lastPt = p;
-  requestEditorRender();
+  // Numarasız dosyalar: değiştirilme zamanına göre, görseli olmayan adımlara sırayla
+  unnamed.sort((a, b) => (a.lastModified || 0) - (b.lastModified || 0));
+  const free = steps.filter((s) => s.include && s.photo && !s.gemURL);
+  let leftover = 0;
+  for (const f of unnamed) {
+    const s = free.shift();
+    if (s) { setGem(s, f); placed++; } else leftover++;
+  }
+  renderSteps();
+  renderCover();
+  const s = activeStep();
+  if (s) renderGem(s);
+  return { placed, byOrder: unnamed.length - leftover, leftover, coverSet };
+}
+
+function handleGemFiles(list) {
+  const files = [...list].filter((f) => f.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(f.name));
+  if (!files.length) return;
+  const r = assignGeminiFiles(files);
+  setGemMsg(`${r.placed} görsel yerleştirildi` +
+    (r.coverSet ? " (kapak dahil)" : "") +
+    (r.byOrder ? `. ${r.byOrder} tanesinin adında numara yoktu, sırayla yerleştirildi; listede kontrol edin` : "") +
+    (r.leftover ? `. ${r.leftover} görsel için boş adım kalmadı` : "") + ".", !!r.leftover);
+}
+els.gemFiles.addEventListener("change", () => { handleGemFiles(els.gemFiles.files); els.gemFiles.value = ""; });
+["dragenter", "dragover"].forEach((ev) => els.gemDrop.addEventListener(ev, (e) => { e.preventDefault(); els.gemDrop.classList.add("over"); }));
+["dragleave", "drop"].forEach((ev) => els.gemDrop.addEventListener(ev, (e) => { e.preventDefault(); els.gemDrop.classList.remove("over"); }));
+els.gemDrop.addEventListener("drop", (e) => handleGemFiles(e.dataTransfer.files));
+
+// =============== Kapak ===============
+async function grabCover() {
+  const t = parseTime(els.coverTime.value || els.coverTime.placeholder);
+  if (Number.isNaN(t)) throw new Error("Kapak zamanını dakika:saniye olarak yazın, ör. 0:03");
+  cover.t = t;
+  cover.rawBlob = await exclusive(() => grabFrameBlob(t));
+  await renderOut(cover);
+  renderCover();
+}
+function renderCover() {
+  const url = finalURL(cover);
+  els.coverImg.hidden = !url;
+  els.coverEmpty.hidden = !!url;
+  if (url) els.coverImg.src = url; else els.coverImg.removeAttribute("src");
+  els.coverEmpty.textContent = cover.t != null && !url ? "Kareyi alın" : "Kapak yok";
+  updateCounts();
+}
+els.coverUseCurrent.onclick = () => { els.coverTime.value = formatTime(Math.round(video.currentTime * 10) / 10); };
+els.coverGrab.onclick = async () => {
+  try { await grabCover(); setMsg(""); } catch (e) { setMsg(e.message, true); els.pdfCard.scrollIntoView({ block: "nearest" }); }
+};
+els.coverTime.addEventListener("change", () => { const t = parseTime(els.coverTime.value); if (!Number.isNaN(t)) cover.t = t; });
+els.coverDl.onclick = () => cover.outBlob ? saveBlob(cover.outBlob, "kapak.jpg") : setMsg("Önce kapak karesini alın.", true);
+els.coverPrompt.onclick = () => copyText(buildCoverPrompt({ title: els.pdfTitle.value.trim() }), els.coverPrompt);
+els.coverFile.addEventListener("change", () => {
+  const f = els.coverFile.files[0];
+  els.coverFile.value = "";
+  if (!f) return;
+  setGem(cover, f);
+  renderCover();
 });
-const endStroke = () => { if (lastPt) { lastPt = null; recompose(); } };
-els.editor.addEventListener("pointerup", endStroke);
-els.editor.addEventListener("pointercancel", endStroke);
-
-function setBrush(b) {
-  brush = b;
-  els.brushErase.classList.toggle("active", b === "erase");
-  els.brushKeep.classList.toggle("active", b === "keep");
-}
-els.brushErase.onclick = () => setBrush("erase");
-els.brushKeep.onclick = () => setBrush("keep");
-els.brushClear.onclick = () => { if (!S) return; S.erase.fill(0); S.keep.fill(0); recompose(); };
-
-function showTab(edit) {
-  els.viewEdit.hidden = !edit;
-  els.viewResult.hidden = edit;
-  els.tabEdit.classList.toggle("active", edit);
-  els.tabResult.classList.toggle("active", !edit);
-  if (edit) renderEditor();
-}
-els.tabResult.onclick = () => showTab(false);
-els.tabEdit.onclick = () => showTab(true);
-
-// ---- Ayarlar ----
-function updateOutputs() {
-  $("expand-out").textContent = `%${(+els.expand.value).toLocaleString("tr")}`;
-  $("skin-out").textContent = +els.skin.value === 0 ? "Kapalı" : els.skin.value;
-  $("reach-out").textContent = `%${(+els.reach.value).toLocaleString("tr")}`;
-  els.reach.disabled = !els.fill.checked;
-}
-for (const el of [els.expand, els.skin, els.reach]) el.addEventListener("input", () => { updateOutputs(); scheduleRecompose(); });
-for (const el of [els.arm, els.fill, els.clean, els.transparent]) el.addEventListener("change", () => { updateOutputs(); recompose(); });
-updateOutputs();
-
-// ---- Tek fotoğraf indirme ----
-function fileBase() { return `urun_${formatTime(S?.t ?? 0).replace(/[:.]/g, "-")}`; }
-function saveBlob(blob, name) {
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-}
-function saveCanvas(canvas, type, name, quality) { canvas.toBlob((b) => saveBlob(b, name), type, quality); }
-els.dlPng.onclick = () => S && saveCanvas(els.result, "image/png", `${fileBase()}.png`);
-els.dlJpg.onclick = () => {
-  if (!S) return;
-  const c = document.createElement("canvas");
-  c.width = els.result.width; c.height = els.result.height;
-  const g = c.getContext("2d");
-  g.fillStyle = "#fff";
-  g.fillRect(0, 0, c.width, c.height);
-  g.drawImage(els.result, 0, 0);
-  saveCanvas(c, "image/jpeg", `${fileBase()}.jpg`, 0.92);
-};
-els.dlFrame.onclick = () => {
-  if (!S) return;
-  exclusive(async () => {
-    const c = await grabFrame(S.t, 100000);
-    saveCanvas(c, "image/jpeg", `kare_${formatTime(S.t).replace(/[:.]/g, "-")}.jpg`, 0.95);
-  }).catch((e) => setEditorMsg(friendly(e), true));
-};
 
 // =============== PDF ===============
-function updateCoverOptions() {
-  const sel = els.pdfCover;
-  const prev = sel.value;
-  const withImg = steps.filter((s) => s.include && s.img);
-  sel.innerHTML = `<option value="">Kapak fotoğrafı yok</option>` +
-    withImg.map((s) => `<option value="${s.id}">${formatTime(Math.floor(s.start))} · ${esc(s.text.slice(0, 40))}</option>`).join("");
-  if (withImg.some((s) => String(s.id) === prev)) sel.value = prev;
-  else if (withImg.length) sel.value = String(withImg[withImg.length - 1].id); // Varsayılan: bitmiş ürün (son fotoğraf)
-}
-
 function buildBooklet() {
   const inc = steps.filter((s) => s.include && s.text.trim());
-  const cover = stepById(els.pdfCover.value);
+  const nums = stepNumbers();
+  const clean = (t) => esc(String(t).replace(/\s*\[CHECK:[^\]]*\]/gi, "")); // Kontrol notları PDF'e girmez
   const title = els.pdfTitle.value.trim() || "Pattern";
   const author = els.pdfAuthor.value.trim();
-  const list = (t) => linesToList(t).map((l) => `<li>${esc(l)}</li>`).join("");
+  const list = (t) => linesToList(t).map((l) => `<li>${clean(l)}</li>`).join("");
   const sizes = textToSizes(els.pdfSizes.value);
   const abbr = textToAbbr(els.pdfAbbr.value);
-  const clean = (t) => esc(t.replace(/\s*\[CHECK:[^\]]*\]/gi, "")); // Kontrol notları PDF'e girmez
+  const coverURL = finalURL(cover);
 
   const infoBlocks = [
     els.pdfMaterials.value.trim() && `<div class="b-box"><h3>Materials</h3><ul>${list(els.pdfMaterials.value)}</ul></div>`,
@@ -969,21 +886,22 @@ function buildBooklet() {
   const sizesHTML = sizes.headers.length ? `
     <h3>Finished Sizes</h3>
     <table class="b-table"><thead><tr>${sizes.headers.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead>
-    <tbody>${sizes.rows.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "";
+    <tbody>${sizes.rows.map((r) => `<tr>${r.map((c) => `<td>${clean(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "";
   const abbrHTML = abbr.length ? `
     <h3>Abbreviations (US terms)</h3>
     <table class="b-table b-abbr"><tbody>${abbr.map((a) => `<tr><th>${esc(a.abbr)}</th><td>${esc(a.meaning)}</td></tr>`).join("")}</tbody></table>` : "";
-  const notesHTML = els.pdfNotes.value.trim() ? `<h3>Notes</h3><ul class="b-notes">${list(els.pdfNotes.value)}</ul>` : "";
+  const notesHTML = els.pdfNotes.value.trim()
+    ? `<h3>Notes</h3><ul class="b-notes">${linesToList(els.pdfNotes.value).map((l) => `<li>${clean(l)}</li>`).join("")}</ul>` : "";
 
-  let n = 0;
   let lastSec;
   const stepsHTML = inc.map((s) => {
     let head = "";
     if (s.section && s.section !== lastSec) head = `<h2 class="b-sec">${esc(s.section)}</h2>`;
     lastSec = s.section;
-    const img = s.photo && s.img ? `<img alt="" src="${s.img}">` : "";
-    if (s.kind === "info" && !img) return `${head}<div class="b-note">${clean(s.text)}</div>`;
-    n++;
+    const url = s.photo ? finalURL(s) : null;
+    const img = url ? `<img alt="" src="${url}">` : "";
+    const n = nums.get(s.id);
+    if (!n) return `${head}<div class="b-note">${clean(s.text)}</div>`;
     return `${head}<div class="b-step"><div class="b-num">${n}</div><div class="b-body"><p>${clean(s.text)}</p>${img}</div></div>`;
   }).join("");
 
@@ -993,7 +911,7 @@ function buildBooklet() {
       ${els.pdfSkill.value ? `<div class="b-skill">${esc(els.pdfSkill.value)}</div>` : ""}
       <h1>${esc(title)}</h1>
       ${els.pdfSubtitle.value.trim() ? `<p class="b-subtitle">${esc(els.pdfSubtitle.value.trim())}</p>` : ""}
-      ${cover?.img ? `<img alt="" src="${cover.img}">` : ""}
+      ${coverURL ? `<img alt="" src="${coverURL}">` : ""}
       <div class="b-cover-foot">${author ? `Designed by ${esc(author)}` : ""}<span>PDF Pattern · US terms</span></div>
     </section>
     <section class="b-info">
@@ -1014,11 +932,15 @@ function buildBooklet() {
 
 els.print.onclick = async () => {
   if (!steps.some((s) => s.include)) return setMsg("PDF'e eklenecek adım yok.", true);
-  const missing = steps.filter((s) => s.include && s.photo && !s.img).length;
+  const ph = steps.filter((s) => s.include && s.photo);
+  const missing = ph.filter((s) => !finalURL(s)).length;
+  const raw = ph.filter((s) => !s.gemURL && s.outURL).length;
   const checks = steps.filter((s) => s.include && /\[CHECK/i.test(s.text)).length;
   const warns = [
-    missing && `${missing} adımın fotoğrafı henüz çıkarılmadı.`,
-    checks && `${checks} adımda hâlâ [CHECK] notu var (bu notlar PDF'e yazılmaz ama içerik kontrol edilmeli).`,
+    missing && `${missing} adımın fotoğrafı yok.`,
+    raw && `${raw} adımda Gemini görseli yok, ham kare kullanılacak.`,
+    !finalURL(cover) && "Kapak fotoğrafı yok.",
+    checks && `${checks} adımda hâlâ [CHECK] notu var (notlar PDF'e yazılmaz ama içerik kontrol edilmeli).`,
   ].filter(Boolean);
   if (warns.length && !confirm(`${warns.join("\n")}\n\nYine de devam edilsin mi?`)) return;
   const imgs = buildBooklet();
@@ -1030,20 +952,25 @@ els.print.onclick = async () => {
 };
 
 // =============== Proje kaydet / aç ===============
+const FIELD_KEYS = ["pdfTitle", "pdfSubtitle", "pdfIntro", "pdfSkill", "pdfAuthor", "pdfMaterials", "pdfTools",
+  "pdfSizes", "pdfAbbr", "pdfNotes", "pdfCopyright", "pdfSize", "etsyTitle", "etsyDesc", "etsyTags", "coverTime"];
+
 els.projectSave.onclick = () => {
   if (!steps.length && !els.transcript.value.trim()) return setMsg("Kaydedilecek bir şey yok.", true);
   const project = {
-    app: "urun-karesi", version: 1, savedAt: new Date().toISOString(),
+    app: "urun-karesi", version: 2, savedAt: new Date().toISOString(),
     videoName: els.videoName.textContent,
     transcript: els.transcript.value,
     frameAt: els.frameAt.value,
-    fields: Object.fromEntries(["pdfTitle", "pdfSubtitle", "pdfIntro", "pdfSkill", "pdfAuthor", "pdfMaterials", "pdfTools",
-      "pdfSizes", "pdfAbbr", "pdfNotes", "pdfCopyright", "pdfSize", "etsyTitle", "etsyDesc", "etsyTags"].map((k) => [k, els[k].value])),
-    steps: steps.map(({ id, section, text, kind, start, end, include, photo, customT }) => ({ id, section, text, kind, start, end, include, photo, customT })),
+    hands: els.hands.value,
+    fields: Object.fromEntries(FIELD_KEYS.map((k) => [k, els[k].value])),
+    cover: { t: cover.t, crop: cover.crop },
+    steps: steps.map(({ section, text, kind, start, end, include, photo, photoType, customT, crop, fileNo }) =>
+      ({ section, text, kind, start, end, include, photo, photoType, customT, crop, fileNo })),
   };
   const name = (els.pdfTitle.value.trim() || els.videoName.textContent || "proje").replace(/[\\/:*?"<>|]+/g, "").slice(0, 80);
   saveBlob(new Blob([JSON.stringify(project, null, 2)], { type: "application/json" }), `${name}.json`);
-  setMsg("Proje kaydedildi. Fotoğraflar dosyaya girmez; projeyi açınca aynı videoyu seçip \"Fotoğrafları çıkar\"a basın.");
+  setMsg("Proje kaydedildi. Görseller dosyaya girmez: açınca aynı videoyu seçip \"Kareleri al\"a basın ve Gemini görsellerini 3. bölüme yeniden sürükleyin.");
 };
 
 els.projectOpen.addEventListener("change", async () => {
@@ -1053,30 +980,49 @@ els.projectOpen.addEventListener("change", async () => {
   try {
     const p = JSON.parse(await f.text());
     if (p.app !== "urun-karesi" || !Array.isArray(p.steps)) throw new Error();
-    for (const s of steps) if (s.img) URL.revokeObjectURL(s.img);
+    steps.forEach(releaseStep);
+    setOut(cover, null); setGem(cover, null); cover.rawBlob = null;
     els.transcript.value = p.transcript || "";
     els.frameAt.value = p.frameAt || "end";
+    if (p.hands) els.hands.value = p.hands;
     for (const [k, v] of Object.entries(p.fields || {})) if (els[k]) els[k].value = v ?? "";
-    steps = p.steps.map((s) => ({ ...s, id: nextId++, img: null, status: "" }));
-    els.stepsCard.hidden = els.pdfCard.hidden = !steps.length;
+    cover.t = p.cover?.t ?? null;
+    cover.crop = p.cover?.crop ?? null;
+    steps = p.steps.map((s) => ({ photoType: "result", crop: null, ...s, id: nextId++, status: "" }));
+    if (steps.length) showWorkCards();
     els.etsyCard.hidden = !(els.etsyTitle.value || els.etsyDesc.value);
     updateEtsyLen();
     closeEditor();
     renderSteps();
-    const sameVideo = p.videoName && p.videoName === els.videoName.textContent;
-    setMsg(`Proje açıldı: ${steps.length} adım.` + (video.duration && sameVideo ? " \"Fotoğrafları çıkar\" ile fotoğrafları yeniden oluşturun." :
-      ` Fotoğraflar için videoyu seçin${p.videoName ? ` (${p.videoName})` : ""}, sonra "Fotoğrafları çıkar"a basın.`));
+    renderCover();
+    setMsg(`Proje açıldı: ${steps.length} adım. ` + (video.duration ? "\"Kareleri al\"a basın, " :
+      `Videoyu seçin${p.videoName ? ` (${p.videoName})` : ""}, "Kareleri al"a basın, `) + "Gemini görsellerini 3. bölüme sürükleyin.");
   } catch {
     setMsg("Bu dosya bir Ürün Karesi projesi değil.", true);
   }
 });
 
 // =============== Yardımcılar ===============
-function friendly(e) {
-  const m = String(e?.message || e);
-  if (/fetch|network|Failed to load|import|dynamically imported/i.test(m)) return "Yapay zekâ modelleri indirilemedi. İnternet bağlantınızı kontrol edip tekrar deneyin.";
-  return m.length < 160 ? m : "Bir hata oluştu. Sayfayı yenileyip tekrar deneyin.";
+function saveBlob(blob, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+    const old = btn.textContent;
+    btn.textContent = "✓ Kopyalandı";
+    setTimeout(() => (btn.textContent = old), 1800);
+  } catch {
+    prompt("Kopyalayın:", text);
+  }
 }
 function setMsg(text, isErr = false) { els.msg.textContent = text; els.msg.className = "msg" + (isErr ? " err" : ""); }
 function setEditorMsg(text, isErr = false) { els.editorMsg.textContent = text; els.editorMsg.className = "msg" + (isErr ? " err" : ""); }
+function setGemMsg(text, isErr = false) { els.gemMsg.textContent = text; els.gemMsg.className = "msg" + (isErr ? " err" : ""); }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }

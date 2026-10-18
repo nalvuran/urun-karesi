@@ -247,3 +247,31 @@ export function formatTime(sec) {
   const ss = (Number.isInteger(s) ? String(s) : s.toFixed(1)).padStart(Number.isInteger(s) ? 2 : 4, "0");
   return (h ? h + ":" + String(m).padStart(2, "0") : String(m).padStart(2, "0")) + ":" + ss;
 }
+
+/**
+ * Hafif otomatik ışık düzeltme: parlaklığın %1 ve %99 noktalarını genişletir,
+ * sonucu orijinalle karıştırır (strength 0–1). rgba yerinde değiştirilir.
+ */
+export function autoLevels(rgba, strength = 0.7) {
+  const hist = new Uint32Array(256);
+  const n = rgba.length / 4;
+  for (let i = 0; i < rgba.length; i += 4) {
+    hist[(rgba[i] * 0.299 + rgba[i + 1] * 0.587 + rgba[i + 2] * 0.114) | 0]++;
+  }
+  let lo = 0, hi = 255, acc = 0;
+  for (; lo < 255; lo++) { acc += hist[lo]; if (acc > n * 0.01) break; }
+  acc = 0;
+  for (; hi > 0; hi--) { acc += hist[hi]; if (acc > n * 0.01) break; }
+  if (hi - lo < 20) return;
+  const scale = 255 / (hi - lo);
+  const lut = new Uint8ClampedArray(256);
+  for (let v = 0; v < 256; v++) {
+    const stretched = (v - lo) * scale;
+    // Hafif aydınlatma (gamma 0.92) ve orijinalle karıştırma
+    const lifted = 255 * Math.pow(Math.min(1, Math.max(0, stretched / 255)), 0.92);
+    lut[v] = v + (lifted - v) * strength;
+  }
+  for (let i = 0; i < rgba.length; i += 4) {
+    rgba[i] = lut[rgba[i]]; rgba[i + 1] = lut[rgba[i + 1]]; rgba[i + 2] = lut[rgba[i + 2]];
+  }
+}
