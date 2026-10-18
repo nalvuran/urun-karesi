@@ -1,10 +1,10 @@
-import { parseTime, formatTime, autoLevels } from "./processing.js?v=20261018f";
-import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261018f";
+import { parseTime, formatTime, autoLevels, thumbDescriptor, descDistance, greedyMatch, DESC_W, DESC_H } from "./processing.js?v=20261018g";
+import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261018g";
 import {
   MODELS, writePattern, patternToSteps, buildChatPrompt, parseChatReply,
   linesToList, sizesToText, textToSizes, abbrToText, textToAbbr,
-} from "./pattern.js?v=20261018f";
-import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName } from "./gemini.js?v=20261018f";
+} from "./pattern.js?v=20261018g";
+import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName } from "./gemini.js?v=20261018g";
 
 const JSZIP_URL = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
 const FRAME_MAX = 2400; // Ham karenin en fazla uzun kenarı (piksel)
@@ -18,7 +18,7 @@ const els = Object.fromEntries([
   "extract", "extract-all", "cancel", "batch-msg",
   "editor-card", "editor-title", "editor-close", "editor-text", "time", "use-current", "regrab", "photo-type",
   "editor-msg", "crop-canvas", "crop-reset", "dl-raw", "gem-stage", "gem-img", "gem-empty", "copy-prompt", "gem-file", "gem-remove",
-  "gemini-card", "hands", "enhance", "dl-zip", "gem-status", "gem-drop", "gem-files", "gem-msg",
+  "gemini-card", "hands", "enhance", "dl-zip", "gem-status", "gem-drop", "gem-files", "gem-msg", "gem-review",
   "pdf-card", "pdf-title", "pdf-intro", "pdf-author", "pdf-size", "print", "booklet",
   "cover-img", "cover-empty", "cover-time", "cover-use-current", "cover-grab", "cover-dl", "cover-prompt", "cover-file",
   "project-save", "project-open", "ai-card", "ai-status", "api-key", "ai-model", "api-remember", "ai-write", "ai-cancel",
@@ -122,6 +122,7 @@ async function renderOut(item) {
 
 function setOut(item, blob) {
   if (item.outURL) URL.revokeObjectURL(item.outURL);
+  item._desc = null;
   item.outBlob = blob;
   item.outURL = blob ? URL.createObjectURL(blob) : null;
 }
@@ -770,7 +771,7 @@ els.dlZip.onclick = async () => {
     const lines = [
       `GEMINI KOMUTLARI — ${title || "tarif"}`,
       "Her görseli Gemini'ye yükleyin, altındaki komutu yapıştırın ve sonucu indirin.",
-      "İndirdiğiniz dosyayı aynı adla (ör. adim-05.png) kaydederseniz uygulama doğru adıma yerleştirir.",
+      "Dosya adlarını değiştirmenize gerek yok: uygulama Gemini görsellerini ham karelere bakarak doğru adıma yerleştirir.",
       "",
     ];
     if (cover.outBlob) {
@@ -794,41 +795,125 @@ els.dlZip.onclick = async () => {
   }
 };
 
-function assignGeminiFiles(files) {
-  const nums = stepNumbers();
-  const byNo = new Map();
-  for (const s of steps) if (s.include && s.photo) byNo.set(s.fileNo ?? nums.get(s.id), s);
-  const unnamed = [];
-  let placed = 0, coverSet = false;
-  for (const f of files) {
-    const no = numberFromFileName(f.name);
-    if (no === 0) { setGem(cover, f); coverSet = true; placed++; continue; }
-    const s = no != null ? byNo.get(no) : null;
-    if (s) { setGem(s, f); placed++; } else unnamed.push(f);
-  }
-  // Numarasız dosyalar: değiştirilme zamanına göre, görseli olmayan adımlara sırayla
-  unnamed.sort((a, b) => (a.lastModified || 0) - (b.lastModified || 0));
-  const free = steps.filter((s) => s.include && s.photo && !s.gemURL);
-  let leftover = 0;
-  for (const f of unnamed) {
-    const s = free.shift();
-    if (s) { setGem(s, f); placed++; } else leftover++;
-  }
-  renderSteps();
-  renderCover();
-  const s = activeStep();
-  if (s) renderGem(s);
-  return { placed, byOrder: unnamed.length - leftover, leftover, coverSet };
+/** Küçük resim parmak izi (benzerlik eşleştirmesi için). */
+async function descOf(blob) {
+  const bmp = await createImageBitmap(blob);
+  const c = document.createElement("canvas");
+  c.width = DESC_W; c.height = DESC_H;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.drawImage(bmp, 0, 0, DESC_W, DESC_H);
+  bmp.close?.();
+  return thumbDescriptor(g.getImageData(0, 0, DESC_W, DESC_H).data);
+}
+async function rawDesc(item) {
+  if (!item.outBlob) return null;
+  return (item._desc ??= await descOf(item.outBlob));
 }
 
-function handleGemFiles(list) {
+const targetKey = (t) => (t === cover ? "cover" : String(t.id));
+const targetByKey = (k) => (k === "cover" ? cover : stepById(k));
+function targetLabel(t) {
+  if (t === cover) return "Kapak";
+  const n = stepNumbers().get(t.id);
+  return `Adım ${n ?? "?"} — ${t.text.replace(/\s*\[CHECK:[^\]]*\]/gi, "").slice(0, 38)}`;
+}
+
+let review = []; // [{ file, url, target, how }]
+
+async function assignGeminiFiles(files) {
+  const nums = stepNumbers();
+  const photoSteps = steps.filter((s) => s.include && s.photo);
+  const byNo = new Map(photoSteps.map((s) => [s.fileNo ?? nums.get(s.id), s]));
+  const taken = new Set();
+  const result = [];
+  const rest = [];
+  // 1) Dosya adında numara varsa (adim-05, kapak) doğrudan
+  for (const f of files) {
+    const no = numberFromFileName(f.name);
+    const t = no === 0 ? cover : no != null ? byNo.get(no) : null;
+    if (t && !taken.has(t)) { taken.add(t); result.push({ file: f, target: t, how: "dosya adı" }); }
+    else rest.push(f);
+  }
+  // 2) Görüntü benzerliği: Gemini kadrajı koruduğu için her görsel kendi ham karesine en çok benzer
+  const cands = [cover, ...photoSteps].filter((t) => t.outBlob && !taken.has(t));
+  let unmatched = rest;
+  if (rest.length && cands.length) {
+    try {
+      const fd = await Promise.all(rest.map(descOf));
+      const cd = await Promise.all(cands.map(rawDesc));
+      const m = greedyMatch(fd.map((d) => cd.map((c) => descDistance(d, c))));
+      unmatched = [];
+      rest.forEach((f, i) => {
+        if (m.has(i)) { const t = cands[m.get(i)]; taken.add(t); result.push({ file: f, target: t, how: "görüntü" }); }
+        else unmatched.push(f);
+      });
+    } catch (e) { console.error(e); unmatched = rest; }
+  }
+  // 3) Kalanlar: değiştirilme zamanına göre, görseli olmayan adımlara sırayla
+  unmatched.sort((x, y) => (x.lastModified || 0) - (y.lastModified || 0));
+  const free = photoSteps.filter((s) => !s.gemURL && !taken.has(s));
+  let leftover = 0;
+  for (const f of unmatched) {
+    const t = free.shift();
+    if (t) { taken.add(t); result.push({ file: f, target: t, how: "sıra" }); } else leftover++;
+  }
+  for (const r of result) setGem(r.target, r.file);
+  review.forEach((r) => URL.revokeObjectURL(r.url));
+  review = result.map((r) => ({ ...r, url: URL.createObjectURL(r.file) }));
+  renderSteps();
+  renderCover();
+  renderReview();
+  const s = activeStep();
+  if (s) renderGem(s);
+  return { placed: result.length, leftover, noRaw: rest.length && !cands.length };
+}
+
+function renderReview() {
+  const box = els.gemReview;
+  if (!review.length) { box.hidden = true; box.innerHTML = ""; return; }
+  const targets = [cover, ...steps.filter((s) => s.include && s.photo)];
+  box.hidden = false;
+  box.innerHTML = `<p class="label">Eşleştirmeyi kontrol edin <span class="muted small">— yanlışsa sağdaki listeden doğru adımı seçin</span></p>` +
+    review.map((r, i) => `
+      <div class="rv-row">
+        <img class="rv-gem" alt="" src="${r.url}">
+        <span class="rv-arrow">→</span>
+        ${r.target.outURL ? `<img class="rv-raw" alt="" src="${r.target.outURL}">` : `<span class="rv-raw rv-none">ham kare yok</span>`}
+        <div class="rv-pick">
+          <select data-i="${i}">${targets.map((t) => `<option value="${targetKey(t)}" ${t === r.target ? "selected" : ""}>${esc(targetLabel(t))}</option>`).join("")}</select>
+          <span class="muted small">${r.how === "görüntü" ? "görüntüye göre eşleşti" : r.how === "dosya adı" ? "dosya adına göre" : "sıraya göre (kontrol edin)"}</span>
+        </div>
+      </div>`).join("");
+}
+
+els.gemReview.addEventListener("change", (e) => {
+  const sel = e.target.closest("select[data-i]");
+  if (!sel) return;
+  const r = review[+sel.dataset.i];
+  const next = targetByKey(sel.value);
+  if (!next || next === r.target) return;
+  const other = review.find((x) => x.target === next);
+  const prev = r.target;
+  if (prev.gemBlob === r.file) setGem(prev, null);
+  if (other) { setGem(prev, other.file); other.target = prev; other.how = "elle"; }
+  setGem(next, r.file);
+  r.target = next;
+  r.how = "elle";
+  renderSteps();
+  renderCover();
+  renderReview();
+  const s = activeStep();
+  if (s) renderGem(s);
+});
+
+async function handleGemFiles(list) {
   const files = [...list].filter((f) => f.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(f.name));
   if (!files.length) return;
-  const r = assignGeminiFiles(files);
-  setGemMsg(`${r.placed} görsel yerleştirildi` +
-    (r.coverSet ? " (kapak dahil)" : "") +
-    (r.byOrder ? `. ${r.byOrder} tanesinin adında numara yoktu, sırayla yerleştirildi; listede kontrol edin` : "") +
-    (r.leftover ? `. ${r.leftover} görsel için boş adım kalmadı` : "") + ".", !!r.leftover);
+  setGemMsg("Görseller eşleştiriliyor…");
+  const r = await assignGeminiFiles(files);
+  setGemMsg(`${r.placed} görsel yerleştirildi. Aşağıdaki listeden kontrol edin.` +
+    (r.noRaw ? " (Ham kareler alınmadığı için görüntüyle eşleştirme yapılamadı; önce \"Kareleri al\".)" : "") +
+    (r.leftover ? ` ${r.leftover} görsel için boş adım kalmadı.` : ""), !!r.leftover);
 }
 els.gemFiles.addEventListener("change", () => { handleGemFiles(els.gemFiles.files); els.gemFiles.value = ""; });
 ["dragenter", "dragover"].forEach((ev) => els.gemDrop.addEventListener(ev, (e) => { e.preventDefault(); els.gemDrop.classList.add("over"); }));

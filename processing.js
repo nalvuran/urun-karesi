@@ -275,3 +275,53 @@ export function autoLevels(rgba, strength = 0.7) {
     rgba[i] = lut[rgba[i]]; rgba[i + 1] = lut[rgba[i + 1]]; rgba[i + 2] = lut[rgba[i + 2]];
   }
 }
+
+// ---- Görsel benzerlik (Gemini görselini kendi ham karesiyle eşleştirmek için) ----
+export const DESC_W = 32, DESC_H = 18;
+
+/** Küçültülmüş RGBA'dan parlaklığa duyarsız bir parmak izi: gri ton + renk, ortalaması çıkarılmış ve ölçeklenmiş. */
+export function thumbDescriptor(rgba) {
+  const n = rgba.length / 4;
+  const ch = [new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+  for (let i = 0; i < n; i++) {
+    const r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
+    ch[0][i] = 0.299 * r + 0.587 * g + 0.114 * b; // parlaklık
+    ch[1][i] = r - g;                              // kırmızı-yeşil
+    ch[2][i] = b - (r + g) / 2;                    // mavi-sarı
+  }
+  for (const a of ch) {
+    let m = 0;
+    for (const v of a) m += v;
+    m /= n;
+    let sd = 0;
+    for (let i = 0; i < n; i++) { a[i] -= m; sd += a[i] * a[i]; }
+    sd = Math.sqrt(sd / n) || 1;
+    for (let i = 0; i < n; i++) a[i] /= sd;
+  }
+  return ch;
+}
+
+/** İki parmak izi arasındaki uzaklık (küçük = benzer). Parlaklık yapısı ağır basar. */
+export function descDistance(a, b) {
+  const wts = [1, 0.5, 0.5];
+  let d = 0;
+  for (let c = 0; c < 3; c++) {
+    let s = 0;
+    for (let i = 0; i < a[c].length; i++) { const x = a[c][i] - b[c][i]; s += x * x; }
+    d += wts[c] * (s / a[c].length);
+  }
+  return d;
+}
+
+/** Açgözlü eşleştirme: maliyet matrisinde (satır=dosya, sütun=hedef) en ucuz çiftleri sırayla seçer. */
+export function greedyMatch(cost) {
+  const pairs = [];
+  cost.forEach((row, i) => row.forEach((c, j) => pairs.push([c, i, j])));
+  pairs.sort((x, y) => x[0] - y[0]);
+  const usedR = new Set(), usedC = new Set(), out = new Map();
+  for (const [, i, j] of pairs) {
+    if (usedR.has(i) || usedC.has(j)) continue;
+    usedR.add(i); usedC.add(j); out.set(i, j);
+  }
+  return out; // dosya indeksi → hedef indeksi
+}

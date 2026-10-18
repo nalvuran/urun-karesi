@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ürün Karesi</title>
 <meta name="description" content="Örgü videosu ve transkriptinden adım adım ürün fotoğrafları çıkar, elleri sil, PDF tarif kitapçığı hazırla.">
-<link rel="stylesheet" href="style.css?v=20261018f">
+<link rel="stylesheet" href="style.css?v=20261018g">
 </head>
 <body>
 <main>
@@ -150,7 +150,7 @@
     <ol class="howto muted small">
       <li><b>Tüm kareleri indir</b>: ham kareler ve her biri için hazır Gemini komutları tek dosyada (zip) iner.</li>
       <li>Gemini'de her kareyi yükleyip <code>GEMINI-KOMUTLARI.txt</code> içindeki komutunu yapıştırın, sonucu indirin.</li>
-      <li>Hepsini aşağıdaki alana sürükleyin. Dosya adında numara varsa (<code>adim-05</code>) o adıma, yoksa indirme sırasına göre yerleşir.</li>
+      <li>Hepsini aşağıdaki alana sürükleyin. <b>Dosya adlarını değiştirmenize gerek yok</b>: uygulama her görseli ham karelere bakarak doğru adıma yerleştirir, siz de altta kontrol edersiniz.</li>
     </ol>
     <div class="pdf-grid">
       <label class="field"><span>Eller</span><select id="hands"></select></label>
@@ -167,6 +167,7 @@
       <small>Birden fazla dosya seçebilirsiniz.</small>
     </label>
     <p id="gem-msg" class="msg" role="status"></p>
+    <div id="gem-review" class="gem-review" hidden></div>
   </section>
 
   <!-- 4. PDF -->
@@ -245,6 +246,6 @@
 <!-- Yazdırma çıktısı (yalnızca PDF'te görünür) -->
 <div id="booklet"></div>
 
-<script type="module" src="app.js?v=20261018f"></script>
+<script type="module" src="app.js?v=20261018g"></script>
 </body>
 </html>
