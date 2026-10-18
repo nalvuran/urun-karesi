@@ -1,10 +1,11 @@
-import { parseTime, formatTime, autoLevels, thumbDescriptor, descDistance, greedyMatch, DESC_W, DESC_H } from "./processing.js?v=20261019c";
-import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261019c";
+import { parseTime, formatTime, autoLevels, thumbDescriptor, descDistance, greedyMatch, DESC_W, DESC_H } from "./processing.js?v=20261019e";
+import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261019e";
 import {
   MODELS, writePattern, patternToSteps, buildChatPrompt, parseChatReply,
   linesToList, sizesToText, textToSizes, abbrToText, textToAbbr,
-} from "./pattern.js?v=20261019c";
-import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName, GEMINI_MODELS, editImageWithGemini, nearestAspect } from "./gemini.js?v=20261019c";
+} from "./pattern.js?v=20261019e";
+import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, buildMasterPrompt, GEMINI_MODELS, editImageWithGemini, nearestAspect } from "./gemini.js?v=20261019e";
+import { drawAnnotations } from "./annot.js?v=20261019e";
 
 const JSZIP_URL = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
 const FRAME_MAX = 2400; // Ham karenin en fazla uzun kenarı (piksel)
@@ -25,17 +26,23 @@ const els = Object.fromEntries([
   "pdf-subtitle", "pdf-kicker", "pdf-color", "pdf-skill", "pdf-materials", "pdf-tools", "pdf-sizes", "pdf-abbr", "pdf-notes", "pdf-copyright",
   "etsy-card", "etsy-title", "etsy-title-len", "etsy-desc", "etsy-tags",
   "chat-copy", "chat-paste-open", "chat-panel", "chat-reply", "chat-apply", "chat-close",
+  "ann-canvas", "ann-arrow", "ann-circle", "ann-label", "ann-undo", "ann-clear", "seq-box", "seq-list", "seq-add", "editor-back",
+  "guide-box", "guide-list", "copy-master",
 ].map((id) => [id.replace(/-(\w)/g, (_, c) => c.toUpperCase()), $(id)]));
 
 // ---- Durum ----
 // Adım: { id, section, text, kind, start, end, include, photo, photoType, customT, crop,
 //         rawBlob (tam kare), outBlob/outURL (kırpılmış ham), gemBlob/gemURL (Gemini), fileNo, status }
+// Sıra fotoğrafı (s.extras[i]): { owner: adım, t, crop, rawBlob, outBlob, gemBlob, ann }
+// İlmek rehberi (guide[i]): { guide: true, id, name, abbr, steps[], t, include, crop, rawBlob, outBlob, gemBlob, ann }
 let steps = [];
+let guide = [];
 let nextId = 1;
-let activeId = null;
+let active = null; // Düzenleyicide açık fotoğraf öğesi (adım, sıra fotoğrafı, rehber)
 let cancelBatch = false;
 let batchRunning = false;
-const cover = { t: null, rawBlob: null, crop: null, outBlob: null, outURL: null, gemBlob: null, gemURL: null };
+const cover = { isCover: true, t: null, rawBlob: null, crop: null, outBlob: null, outURL: null, gemBlob: null, gemURL: null, ann: [] };
+const DEFAULT_TECH_CROP = { x: 0.12, y: 0.06, w: 0.76, h: 0.88 }; // Teknik fotoğraflarda varsayılan yakın kadraj
 
 // Video üzerinde aynı anda tek işlem (kare alma sırayla olmalı)
 let chain = Promise.resolve();
@@ -56,8 +63,7 @@ function openVideo(file) {
   els.drop.classList.add("compact");
   els.videoName.textContent = file.name;
   // Yeni video: eski ham kareler geçersiz (Gemini görselleri kalır)
-  for (const s of steps) { s.rawBlob = null; setOut(s, null); s.status = ""; }
-  cover.rawBlob = null; setOut(cover, null);
+  for (const it of [...steps, ...steps.flatMap((s) => s.extras || []), ...guide, cover]) { it.rawBlob = null; setOut(it, null); it.status = ""; }
   closeEditor();
   renderSteps();
   renderCover();
@@ -103,7 +109,7 @@ async function grabFrameBlob(t) {
 async function renderOut(item) {
   if (!item.rawBlob) { setOut(item, null); return; }
   const bmp = await createImageBitmap(item.rawBlob);
-  const c0 = item.crop || { x: 0, y: 0, w: 1, h: 1 };
+  const c0 = effectiveCrop(item) || { x: 0, y: 0, w: 1, h: 1 };
   const sx = Math.round(c0.x * bmp.width), sy = Math.round(c0.y * bmp.height);
   const sw = Math.max(8, Math.round(c0.w * bmp.width)), sh = Math.max(8, Math.round(c0.h * bmp.height));
   const k = Math.min(1, OUT_MAX / Math.max(sw, sh));
@@ -131,7 +137,9 @@ function setGem(item, blob) {
   item.gemBlob = blob;
   item.gemURL = blob ? URL.createObjectURL(blob) : null;
 }
-function releaseStep(s) { setOut(s, null); setGem(s, null); s.rawBlob = null; }
+function releaseItem(it) { setOut(it, null); setGem(it, null); it.rawBlob = null; }
+function releaseStep(s) { releaseItem(s); (s.extras || []).forEach(releaseItem); }
+function effectiveCrop(it) { return it.crop || (it.cropTouched ? null : itemType(it) === "technique" ? DEFAULT_TECH_CROP : null); }
 const finalURL = (item) => item.gemURL || item.outURL;
 
 function showWorkCards() {
@@ -285,7 +293,14 @@ const DEFAULT_COPYRIGHT = (author) =>
 
 function applyPattern(p) {
   steps.forEach(releaseStep);
+  guide.forEach(releaseItem);
   steps = patternToSteps(p, video.duration || 0, () => nextId++);
+  steps.forEach(wireExtras);
+  guide = (p.stitch_guide || []).map((g) => {
+    const t = parseTime(g.photo_time);
+    return { guide: true, id: `g${nextId++}`, name: g.name, abbr: g.abbr, steps: g.steps, include: true,
+      t: Number.isNaN(t) ? null : Math.min(t, Math.max(0, (video.duration || 1e9) - 0.1)), crop: null, ann: [] };
+  });
   const ct = parseTime(p.cover_time);
   if (!Number.isNaN(ct)) { els.coverTime.value = formatTime(ct); cover.t = ct; setOut(cover, null); cover.rawBlob = null; }
   els.pdfTitle.value = p.title;
@@ -302,8 +317,10 @@ function applyPattern(p) {
   showWorkCards();
   closeEditor();
   renderSteps();
+  renderGuide();
   renderCover();
 }
+function wireExtras(s) { s.extras = (s.extras || []).map((x) => Object.assign(x, { owner: s, ann: x.ann || [] })); s.ann = s.ann || []; }
 
 // =============== Etsy ilanı ===============
 function setEtsy(e) {
@@ -330,7 +347,7 @@ els.pdfAuthor.addEventListener("change", () => {
 });
 
 
-// =============== Adım listesi ===============
+// =============== Fotoğraf öğeleri (adım, sıra fotoğrafı, ilmek rehberi, kapak) ===============
 function frameTime(s) {
   if (s.customT != null) return s.customT;
   const mode = els.frameAt.value;
@@ -341,6 +358,7 @@ function frameTime(s) {
 
 const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const stepById = (id) => steps.find((s) => s.id === +id);
+const guideById = (id) => guide.find((g) => g.id === id);
 
 /** PDF'teki adım numaraları (dosya adları da bunu kullanır). */
 function stepNumbers() {
@@ -353,14 +371,76 @@ function stepNumbers() {
   }
   return map;
 }
-const fileNoOf = (s) => s.fileNo ?? stepNumbers().get(s.id);
 
+const isExtra = (it) => !!it.owner;
+const isGuide = (it) => !!it.guide;
+const isCover = (it) => it === cover;
+function itemType(it) {
+  if (isCover(it)) return "result";
+  if (isExtra(it) || isGuide(it)) return "technique";
+  return it.photoType || "result";
+}
+function itemTime(it) {
+  if (isCover(it) || isExtra(it) || isGuide(it)) return it.t;
+  return frameTime(it);
+}
+function setItemTime(it, t) {
+  if (isCover(it) || isExtra(it) || isGuide(it)) it.t = t; else it.customT = t;
+}
+function stepItems(s) { return s.include && s.photo ? [s, ...(s.extras || [])] : []; }
+/** Gemini ve kareler için tüm fotoğraf öğeleri: kapak, adımlar (+ sıra fotoğrafları), ilmek rehberi */
+function allItems() {
+  const out = [];
+  if (cover.t != null || cover.outBlob || cover.gemBlob) out.push(cover);
+  for (const s of steps) out.push(...stepItems(s));
+  for (const g of guide) if (g.include && (g.t != null || g.outBlob || g.gemBlob)) out.push(g);
+  return out;
+}
+function itemLabel(it, nums = stepNumbers()) {
+  if (isCover(it)) return "Kapak";
+  if (isGuide(it)) return `İlmek rehberi: ${it.name}`;
+  if (isExtra(it)) return `Adım ${nums.get(it.owner.id) ?? "?"} · sıra ${it.owner.extras.indexOf(it) + 2}`;
+  return `Adım ${nums.get(it.id) ?? "?"} — ${it.text.replace(/\s*\[CHECK:[^\]]*\]/gi, "").slice(0, 36)}`;
+}
+/** Kanonik dosya anahtarı: kapak, adim:5, adim:5:2, ilmek:1 */
+function itemKey(it, nums = stepNumbers()) {
+  if (isCover(it)) return "kapak";
+  if (isGuide(it)) return `ilmek:${guide.indexOf(it) + 1}`;
+  if (isExtra(it)) return `adim:${nums.get(it.owner.id)}:${it.owner.extras.indexOf(it) + 2}`;
+  return `adim:${nums.get(it.id)}`;
+}
+function itemFileName(it, nums) {
+  const k = itemKey(it, nums).split(":");
+  const base = k[0] === "kapak" ? "kapak" : `${k[0]}-${String(k[1]).padStart(2, "0")}${k[2] ? `-${k[2]}` : ""}`;
+  const suffix = isCover(it) ? "" : itemType(it) === "technique" ? "-teknik" : "-sonuc";
+  return base + suffix;
+}
+function keyFromFileName(name) {
+  const b = String(name).toLowerCase().replace(/\.[a-z0-9]+$/, "");
+  if (/kapak|cover/.test(b)) return "kapak";
+  let m = b.match(/(?:adim|adım|step)[\s_-]*0*(\d{1,3})(?:[\s_-]+0*(\d))?(?!\d)/);
+  if (m) return m[2] ? `adim:${+m[1]}:${+m[2]}` : `adim:${+m[1]}`;
+  m = b.match(/(?:ilmek|stitch)[\s_-]*0*(\d{1,2})/);
+  return m ? `ilmek:${+m[1]}` : null;
+}
+function itemPrompt(it) {
+  const title = els.pdfTitle.value.trim();
+  const hands = els.hands.value;
+  if (isCover(it)) return buildCoverPrompt({ title });
+  if (isGuide(it)) return buildGeminiPrompt({ type: "technique", text: `How to work: ${it.name}${it.abbr ? ` (${it.abbr})` : ""}`, desc: it.steps.join(" "), hands, title });
+  if (isExtra(it)) return buildGeminiPrompt({ type: "technique", text: it.owner.text, desc: it.owner.photoDesc, hands, title });
+  return buildGeminiPrompt({ type: it.photoType, text: it.text, desc: it.photoDesc, hands, title });
+}
+
+// =============== Adım listesi ===============
 function picHTML(s) {
   const url = finalURL(s);
-  if (url) return `<img alt="" src="${url}"><span class="badge ${s.gemURL ? "gem" : "raw"}">${s.gemURL ? "Gemini" : "ham"}</span>`;
+  const extra = (s.extras || []).length ? `<span class="badge seq">+${s.extras.length}</span>` : "";
+  const ann = (s.ann || []).length ? `<span class="badge annb">➚</span>` : "";
+  if (url) return `<img alt="" src="${url}"><span class="badge ${s.gemURL ? "gem" : "raw"}">${s.gemURL ? "Gemini" : "ham"}</span>${extra}${ann}`;
   if (s.status === "working") return "";
   if (s.status === "error") return "hata";
-  return s.photo ? "bekliyor" : "—";
+  return (s.photo ? "bekliyor" : "—") + extra;
 }
 
 function stepRowHTML(s) {
@@ -379,7 +459,7 @@ function stepRowHTML(s) {
 }
 
 function rowClass(s) {
-  return `step ${s.kind}${s.include ? "" : " off"}${s.id === activeId ? " active" : ""}${/\[CHECK/i.test(s.text) ? " check" : ""}`;
+  return `step ${s.kind}${s.include ? "" : " off"}${active === s || active?.owner === s ? " active" : ""}${/\[CHECK/i.test(s.text) ? " check" : ""}`;
 }
 
 function renderSteps() {
@@ -397,6 +477,9 @@ function renderSteps() {
 }
 
 function updateRow(s) {
+  if (!s || isCover(s)) return;
+  if (isExtra(s)) s = s.owner;
+  if (isGuide(s)) { renderGuide(); return; }
   const li = els.steps.querySelector(`li.step[data-id="${s.id}"]`);
   if (!li) return;
   li.className = rowClass(s);
@@ -412,15 +495,16 @@ function updateRow(s) {
 
 function updateCounts() {
   const inc = steps.filter((s) => s.include).length;
-  const ph = steps.filter((s) => s.include && s.photo);
-  const missing = ph.filter((s) => !s.rawBlob && !s.gemURL).length;
-  const gem = ph.filter((s) => s.gemURL).length;
+  const items = allItems();
+  const missing = items.filter((it) => !it.rawBlob && !it.gemURL && itemTime(it) != null).length;
+  const gem = items.filter((it) => it.gemURL).length;
+  const ph = steps.filter((s) => s.include && s.photo).length;
   const checks = steps.filter((s) => s.include && /\[CHECK/i.test(s.text)).length;
-  els.stepsCount.textContent = `${inc} adım PDF'te · ${ph.length} fotoğraf` + (checks ? ` · ${checks} [CHECK] notu` : "");
+  els.stepsCount.textContent = `${inc} adım PDF'te · ${ph} adım fotoğraflı · toplam ${items.length} görsel` + (checks ? ` · ${checks} [CHECK] notu` : "");
   els.extract.textContent = missing ? `Kareleri al (${missing})` : "Kareler hazır ✓";
   els.extract.disabled = batchRunning || !missing;
-  els.extractAll.disabled = batchRunning || !ph.length;
-  els.gemStatus.textContent = ph.length ? `${gem}/${ph.length} fotoğrafın Gemini görseli yüklendi${cover.gemURL ? " · kapak ✓" : ""}` : "";
+  els.extractAll.disabled = batchRunning || !items.length;
+  els.gemStatus.textContent = items.length ? `${gem}/${items.length} görselin Gemini hali hazır` : "";
 }
 
 els.steps.addEventListener("click", (e) => {
@@ -430,13 +514,14 @@ els.steps.addEventListener("click", (e) => {
   if (e.target.closest(".ts")) {
     if (video.duration) video.currentTime = s.start;
   } else if (e.target.closest(".pic")) {
-    openStep(s);
+    openItem(s);
   } else if (e.target.closest(".merge")) {
     mergeUp(s);
   } else if (e.target.closest(".ptype")) {
     s.photoType = s.photoType === "technique" ? "result" : "technique";
+    if (!s.crop && !s.cropTouched && s.rawBlob) renderOut(s).then(() => updateRow(s));
     updateRow(s);
-    if (s.id === activeId) els.photoType.value = s.photoType;
+    if (active === s) els.photoType.value = s.photoType;
   }
 });
 els.steps.addEventListener("change", (e) => {
@@ -460,7 +545,7 @@ els.steps.addEventListener("input", (e) => {
   const s = stepById(li.dataset.id);
   const hadCheck = /\[CHECK/i.test(s.text);
   s.text = e.target.value;
-  if (s.id === activeId) els.editorText.textContent = s.text;
+  if (active === s) els.editorText.textContent = s.text;
   if (hadCheck !== /\[CHECK/i.test(s.text)) { li.className = rowClass(s); updateCounts(); }
 });
 
@@ -476,16 +561,18 @@ function mergeUp(s) {
   if (s.photo && (s.rawBlob || s.gemURL)) {
     releaseStep(prev);
     Object.assign(prev, {
-      photo: true, photoType: s.photoType, customT: s.customT, crop: s.crop,
+      photo: true, photoType: s.photoType, customT: s.customT, crop: s.crop, cropTouched: s.cropTouched, ann: s.ann,
       rawBlob: s.rawBlob, outBlob: s.outBlob, outURL: s.outURL, gemBlob: s.gemBlob, gemURL: s.gemURL,
+      extras: (s.extras || []).map((x) => Object.assign(x, { owner: prev })),
     });
     s.outURL = s.gemURL = null;
+    s.extras = [];
   } else {
     prev.photo = prev.photo || s.photo;
     releaseStep(s);
   }
   steps.splice(i, 1);
-  if (activeId === s.id) closeEditor();
+  if (active === s || active?.owner === s) closeEditor();
   renderSteps();
 }
 
@@ -496,13 +583,13 @@ els.addStep.onclick = () => {
   const before = steps[(at < 0 ? steps.length : at) - 1];
   const s = {
     id: nextId++, section: before?.section || "", start: t, end: t + 3, text: "", kind: "step",
-    include: true, photo: true, photoType: "result", customT: t, crop: null, status: "",
+    include: true, photo: true, photoType: "result", customT: t, crop: null, status: "", extras: [], ann: [],
   };
   steps.splice(at < 0 ? steps.length : at, 0, s);
   showWorkCards();
   renderSteps();
   els.steps.querySelector(`[data-id="${s.id}"] .txt`)?.focus();
-  openStep(s);
+  openItem(s);
 };
 els.photoNone.onclick = () => { steps.forEach((s) => (s.photo = false)); renderSteps(); };
 els.photoAuto.onclick = () => {
@@ -516,92 +603,131 @@ els.photoAuto.onclick = () => {
 };
 els.frameAt.onchange = () => updateCounts();
 
+// =============== İlmek rehberi listesi ===============
+function renderGuide() {
+  els.guideBox.hidden = !guide.length;
+  els.guideList.innerHTML = guide.map((g) => {
+    const url = finalURL(g);
+    return `<li class="guide-row${g.include ? "" : " off"}" data-gid="${g.id}">
+      <label class="chk" title="PDF'e ekle"><input type="checkbox" class="ginc" ${g.include ? "checked" : ""}></label>
+      <div class="guide-name"><b>${esc(g.name)}</b>${g.abbr ? ` <span class="muted">(${esc(g.abbr)})</span>` : ""}<div class="muted small">${esc(g.steps.join(" · "))}</div></div>
+      <button type="button" class="ts gts">${g.t != null ? formatTime(Math.floor(g.t)) : "—"}</button>
+      <button type="button" class="pic gpic ${g.status || ""}">${url ? `<img alt="" src="${url}"><span class="badge ${g.gemURL ? "gem" : "raw"}">${g.gemURL ? "Gemini" : "ham"}</span>` : g.status === "working" ? "" : "bekliyor"}</button>
+    </li>`;
+  }).join("");
+  updateCounts();
+}
+els.guideList.addEventListener("click", (e) => {
+  const li = e.target.closest("li.guide-row");
+  if (!li) return;
+  const g = guideById(li.dataset.gid);
+  if (e.target.closest(".gts")) { if (video.duration && g.t != null) video.currentTime = g.t; }
+  else if (e.target.closest(".gpic")) openItem(g);
+});
+els.guideList.addEventListener("change", (e) => {
+  const li = e.target.closest("li.guide-row");
+  if (!li || !e.target.classList.contains("ginc")) return;
+  guideById(li.dataset.gid).include = e.target.checked;
+  renderGuide();
+});
+
 // =============== Kareleri toplu alma ===============
-async function grabStep(s) {
-  const t = frameTime(s);
-  s.rawBlob = await exclusive(() => grabFrameBlob(t));
-  s.rawT = t;
-  await renderOut(s);
+async function grabItem(it) {
+  const t = itemTime(it);
+  if (t == null) throw new Error("Bu fotoğrafın zamanı yok.");
+  it.rawBlob = await exclusive(() => grabFrameBlob(t));
+  it.rawT = t;
+  await renderOut(it);
+}
+function refreshItemUI(it) {
+  if (isCover(it)) renderCover();
+  else if (isGuide(it)) renderGuide();
+  else updateRow(it);
+  if (active === it) { renderGem(it); drawAnn(); }
+  if (active && isExtra(it) && active === it.owner) renderSeq();
+  if (active && !isExtra(active) && it.owner === active) renderSeq();
 }
 
 async function runBatch(redoAll) {
   if (!video.duration) return setMsg("Önce videoyu seçin.", true);
-  const list = steps.filter((s) => s.include && s.photo && (redoAll || (!s.rawBlob && !s.gemURL)));
+  const list = allItems().filter((it) => itemTime(it) != null && (redoAll || (!it.rawBlob && !it.gemURL)));
   if (!list.length) return;
   batchRunning = true;
   cancelBatch = false;
   els.cancel.hidden = false;
   updateCounts();
   let done = 0;
-  for (const s of list) {
+  for (const it of list) {
     if (cancelBatch) break;
-    s.status = "working";
-    updateRow(s);
+    it.status = "working";
+    refreshItemUI(it);
     els.batchMsg.textContent = `${done + 1}/${list.length} kare alınıyor…`;
-    try {
-      await grabStep(s);
-      s.status = "";
-    } catch (e) {
-      console.error(e);
-      s.status = "error";
-    }
+    try { await grabItem(it); it.status = ""; }
+    catch (e) { console.error(e); it.status = "error"; }
     done++;
-    updateRow(s);
+    refreshItemUI(it);
     updateCounts();
   }
-  if (cover.t != null && !cover.rawBlob && !cancelBatch) await grabCover().catch(() => {});
   batchRunning = false;
   els.cancel.hidden = true;
   els.batchMsg.textContent = cancelBatch ? "Durduruldu." :
-    `${done} kare hazır. Fotoğrafa dokunarak kırpabilir, sonra 3. bölümden Gemini için indirebilirsiniz.`;
+    `${done} kare hazır. Fotoğrafa dokunarak kırpabilir ve ok/daire ekleyebilirsiniz.`;
   updateCounts();
 }
 els.extract.onclick = () => runBatch(false);
 els.extractAll.onclick = () => runBatch(true);
 els.cancel.onclick = () => { cancelBatch = true; els.batchMsg.textContent = "Durduruluyor…"; };
 
-// =============== Tek adım: kırpma ve Gemini görseli ===============
-let cropBmp = null;   // Açık adımın ham karesi (çizim için)
+// =============== Düzenleyici: kırpma, Gemini görseli, işaretler, sıra fotoğrafları ===============
+let cropBmp = null;
 let dragStart = null;
 let dragRect = null;
 
-function activeStep() { return stepById(activeId); }
-
-async function openStep(s) {
-  activeId = s.id;
+async function openItem(it) {
+  active = it;
   els.editorCard.hidden = false;
-  const n = stepNumbers().get(s.id);
-  els.editorTitle.textContent = `${n ? `Adım ${n}` : "Adım"} · ${formatTime(Math.floor(s.start))}`;
-  els.editorText.textContent = s.text;
-  els.time.value = formatTime(Math.round(frameTime(s) * 10) / 10);
-  els.photoType.value = s.photoType;
+  const nums = stepNumbers();
+  els.editorTitle.textContent = itemLabel(it, nums).replace(/ — .*/, "") + (itemTime(it) != null ? ` · ${formatTime(Math.floor(itemTime(it)))}` : "");
+  els.editorText.textContent = isGuide(it) ? it.steps.join(" · ") : isExtra(it) ? it.owner.text : isCover(it) ? "" : it.text;
+  els.time.value = itemTime(it) != null ? formatTime(Math.round(itemTime(it) * 10) / 10) : "";
+  els.photoType.value = itemType(it);
+  els.photoType.disabled = isExtra(it) || isGuide(it) || isCover(it);
+  els.editorBack.hidden = !isExtra(it);
+  els.seqBox.hidden = isExtra(it) || isGuide(it) || isCover(it);
   setEditorMsg("");
-  for (const li of els.steps.querySelectorAll("li.step")) li.classList.toggle("active", +li.dataset.id === s.id);
-  renderGem(s);
+  for (const li of els.steps.querySelectorAll("li.step")) {
+    const s = stepById(li.dataset.id);
+    li.classList.toggle("active", it === s || it.owner === s);
+  }
+  renderGem(it);
+  renderSeq();
   els.editorCard.scrollIntoView({ behavior: "smooth", block: "start" });
-  if (!s.rawBlob && video.duration) {
+  if (!it.rawBlob && video.duration && itemTime(it) != null) {
     setEditorMsg("Kare alınıyor…");
-    try { await grabStep(s); setEditorMsg(""); updateRow(s); updateCounts(); }
+    try { await grabItem(it); setEditorMsg(""); refreshItemUI(it); updateCounts(); }
     catch (e) { setEditorMsg(e.message, true); }
-  } else if (!s.rawBlob) {
+  } else if (!it.rawBlob && !video.duration) {
     setEditorMsg("Ham kare için önce videoyu seçin.", true);
   }
-  if (activeId === s.id) await loadCropCanvas(s);
+  if (active === it) { await loadCropCanvas(it); drawAnn(); }
 }
+// Eski adla çağrılan yerler için
+const openStep = openItem;
 
 function closeEditor() {
-  activeId = null;
+  active = null;
   cropBmp?.close?.();
   cropBmp = null;
   els.editorCard.hidden = true;
   for (const li of els.steps.querySelectorAll("li.step")) li.classList.remove("active");
 }
 els.editorClose.onclick = closeEditor;
+els.editorBack.onclick = () => { if (active?.owner) openItem(active.owner); };
 
-async function loadCropCanvas(s) {
+async function loadCropCanvas(it) {
   cropBmp?.close?.();
-  cropBmp = s.rawBlob ? await createImageBitmap(s.rawBlob) : null;
-  drawCrop(s.crop);
+  cropBmp = it.rawBlob ? await createImageBitmap(it.rawBlob) : null;
+  drawCrop(effectiveCrop(it));
 }
 
 function drawCrop(rect) {
@@ -625,120 +751,209 @@ function drawCrop(rect) {
   }
 }
 
-function canvasPoint(e) {
-  const r = els.cropCanvas.getBoundingClientRect();
+function canvasPoint(e, canvas) {
+  const r = canvas.getBoundingClientRect();
   return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))];
 }
 els.cropCanvas.addEventListener("pointerdown", (e) => {
   if (!cropBmp) return;
   els.cropCanvas.setPointerCapture(e.pointerId);
-  dragStart = canvasPoint(e);
+  dragStart = canvasPoint(e, els.cropCanvas);
   dragRect = null;
 });
 els.cropCanvas.addEventListener("pointermove", (e) => {
   if (!dragStart) return;
-  const p = canvasPoint(e);
+  const p = canvasPoint(e, els.cropCanvas);
   dragRect = { x: Math.min(p[0], dragStart[0]), y: Math.min(p[1], dragStart[1]), w: Math.abs(p[0] - dragStart[0]), h: Math.abs(p[1] - dragStart[1]) };
   drawCrop(dragRect);
 });
 async function endCrop() {
   if (!dragStart) return;
   dragStart = null;
-  const s = activeStep();
-  if (!s) return;
-  if (!dragRect || dragRect.w < 0.05 || dragRect.h < 0.05) { drawCrop(s.crop); return; }
-  s.crop = dragRect;
-  await renderOut(s);
-  updateRow(s);
+  const it = active;
+  if (!it) return;
+  if (!dragRect || dragRect.w < 0.05 || dragRect.h < 0.05) { drawCrop(effectiveCrop(it)); return; }
+  it.crop = dragRect;
+  await renderOut(it);
+  refreshItemUI(it);
   setEditorMsg("Kırpıldı. Gemini'ye bu kırpılmış hali gider.");
 }
 els.cropCanvas.addEventListener("pointerup", endCrop);
 els.cropCanvas.addEventListener("pointercancel", endCrop);
 els.cropReset.onclick = async () => {
-  const s = activeStep();
-  if (!s) return;
-  s.crop = null;
+  const it = active;
+  if (!it) return;
+  it.crop = null;
+  it.cropTouched = true;
   drawCrop(null);
-  await renderOut(s);
-  updateRow(s);
+  await renderOut(it);
+  refreshItemUI(it);
 };
 
 els.useCurrent.onclick = () => { els.time.value = formatTime(Math.round(video.currentTime * 10) / 10); };
 els.regrab.onclick = async () => {
-  const s = activeStep();
-  if (!s) return;
+  const it = active;
+  if (!it) return;
   const t = parseTime(els.time.value);
   if (Number.isNaN(t)) return setEditorMsg("Zamanı dakika:saniye olarak yazın, ör. 03:15", true);
   if (video.duration && t > video.duration) return setEditorMsg("Bu zaman videonun süresinden uzun.", true);
-  s.customT = t;
+  setItemTime(it, t);
   setEditorMsg("Kare alınıyor…");
   try {
-    await grabStep(s);
-    await loadCropCanvas(s);
-    updateRow(s);
+    await grabItem(it);
+    await loadCropCanvas(it);
+    refreshItemUI(it);
     updateCounts();
-    setEditorMsg(s.gemURL ? "Yeni kare alındı. Gemini görseli eski kareden; gerekirse yeniden yükleyin." : "Yeni kare alındı.");
+    setEditorMsg(it.gemURL ? "Yeni kare alındı. Gemini görseli eski kareden; gerekirse yeniden düzenleyin." : "Yeni kare alındı.");
   } catch (e) { setEditorMsg(e.message, true); }
 };
 els.time.addEventListener("keydown", (e) => { if (e.key === "Enter") els.regrab.click(); });
-els.photoType.onchange = () => {
-  const s = activeStep();
-  if (!s) return;
-  s.photoType = els.photoType.value;
-  updateRow(s);
+els.photoType.onchange = async () => {
+  const it = active;
+  if (!it || isExtra(it) || isGuide(it) || isCover(it)) return;
+  it.photoType = els.photoType.value;
+  if (!it.crop && !it.cropTouched && it.rawBlob) { await renderOut(it); await loadCropCanvas(it); }
+  refreshItemUI(it);
 };
 
-function renderGem(s) {
-  const has = !!s?.gemURL;
+function renderGem(it) {
+  const has = !!it?.gemURL;
   els.gemImg.hidden = !has;
   els.gemEmpty.hidden = has;
   els.gemRemove.hidden = !has;
-  if (has) els.gemImg.src = s.gemURL; else els.gemImg.removeAttribute("src");
+  if (has) els.gemImg.src = it.gemURL; else els.gemImg.removeAttribute("src");
 }
 
-function geminiPromptFor(s) {
-  return buildGeminiPrompt({ type: s.photoType, text: s.text, desc: s.photoDesc, hands: els.hands.value, title: els.pdfTitle.value.trim() });
-}
-
-els.copyPrompt.onclick = async () => {
-  const s = activeStep();
-  if (!s) return;
-  await copyText(geminiPromptFor(s), els.copyPrompt);
-};
+els.copyPrompt.onclick = async () => { if (active) await copyText(itemPrompt(active), els.copyPrompt); };
 els.dlRaw.onclick = () => {
-  const s = activeStep();
-  if (!s?.outBlob) return setEditorMsg("Önce kare alınmalı.", true);
-  saveBlob(s.outBlob, `${fileNameFor(fileNoOf(s) || 0)}.jpg`);
+  if (!active?.outBlob) return setEditorMsg("Önce kare alınmalı.", true);
+  saveBlob(active.outBlob, `${itemFileName(active)}.jpg`);
 };
 els.gemFile.addEventListener("change", () => {
-  const s = activeStep();
+  const it = active;
   const f = els.gemFile.files[0];
   els.gemFile.value = "";
-  if (!s || !f) return;
-  setGem(s, f);
-  renderGem(s);
-  updateRow(s);
+  if (!it || !f) return;
+  setGem(it, f);
+  refreshItemUI(it);
   updateCounts();
-  setEditorMsg("Gemini görseli bu adıma eklendi. Ham kareyle karşılaştırıp ilmeklerin ve tekniğin değişmediğini kontrol edin.");
+  setEditorMsg("Gemini görseli eklendi. Ham kareyle karşılaştırıp ilmeklerin ve tekniğin değişmediğini kontrol edin.");
 });
 els.gemRemove.onclick = () => {
-  const s = activeStep();
+  if (!active) return;
+  setGem(active, null);
+  refreshItemUI(active);
+  updateCounts();
+};
+
+// ---- Ok / daire / yazı işaretleri ----
+let annTool = "arrow";
+let annBmp = null, annBmpFor = null;
+let annDrag = null;
+function setAnnTool(t) {
+  annTool = t;
+  els.annArrow.classList.toggle("active", t === "arrow");
+  els.annCircle.classList.toggle("active", t === "circle");
+}
+els.annArrow.onclick = () => setAnnTool("arrow");
+els.annCircle.onclick = () => setAnnTool("circle");
+
+async function drawAnn(preview) {
+  const it = active;
+  const c = els.annCanvas;
+  const g = c.getContext("2d");
+  const blob = it && (it.gemBlob || it.outBlob);
+  if (!blob) { c.width = 320; c.height = 180; g.clearRect(0, 0, c.width, c.height); return; }
+  if (annBmpFor !== blob) { annBmp?.close?.(); annBmp = await createImageBitmap(blob); annBmpFor = blob; }
+  const k = Math.min(1, 1100 / annBmp.width);
+  c.width = Math.round(annBmp.width * k);
+  c.height = Math.round(annBmp.height * k);
+  g.drawImage(annBmp, 0, 0, c.width, c.height);
+  drawAnnotations(g, c.width, c.height, preview ? [...(it.ann || []), preview] : it.ann || []);
+}
+els.annCanvas.addEventListener("pointerdown", (e) => {
+  if (!active || !(active.gemBlob || active.outBlob)) return;
+  els.annCanvas.setPointerCapture(e.pointerId);
+  annDrag = { start: canvasPoint(e, els.annCanvas), cur: null };
+});
+els.annCanvas.addEventListener("pointermove", (e) => {
+  if (!annDrag) return;
+  annDrag.cur = canvasPoint(e, els.annCanvas);
+  const [x1, y1] = annDrag.start, [x2, y2] = annDrag.cur;
+  drawAnn({ type: annTool, x1, y1, x2, y2, label: els.annLabel.value.trim() });
+});
+function endAnn() {
+  if (!annDrag) return;
+  const d = annDrag;
+  annDrag = null;
+  if (!d.cur || Math.hypot(d.cur[0] - d.start[0], d.cur[1] - d.start[1]) < 0.03) { drawAnn(); return; }
+  const it = active;
+  it.ann = it.ann || [];
+  it.ann.push({ type: annTool, x1: d.start[0], y1: d.start[1], x2: d.cur[0], y2: d.cur[1], label: els.annLabel.value.trim() });
+  drawAnn();
+  refreshItemUI(it);
+}
+els.annCanvas.addEventListener("pointerup", endAnn);
+els.annCanvas.addEventListener("pointercancel", endAnn);
+els.annUndo.onclick = () => { if (active?.ann?.length) { active.ann.pop(); drawAnn(); refreshItemUI(active); } };
+els.annClear.onclick = () => { if (active) { active.ann = []; drawAnn(); refreshItemUI(active); } };
+
+// ---- Sıra fotoğrafları (bir adım için 2–3 ardışık kare) ----
+function renderSeq() {
+  const s = active && !isExtra(active) && !isGuide(active) && !isCover(active) ? active : null;
+  if (!s) { els.seqList.innerHTML = ""; return; }
+  const items = [s, ...(s.extras || [])];
+  els.seqList.innerHTML = items.map((it, i) => {
+    const url = finalURL(it);
+    return `<div class="seq-item${active === it ? " on" : ""}" data-i="${i}">
+      <button type="button" class="seq-pic">${url ? `<img alt="" src="${url}">` : `<span class="muted small">${it.status === "working" ? "…" : "kare yok"}</span>`}<span class="seq-no">${i + 1}</span></button>
+      <span class="muted small">${itemTime(it) != null ? formatTime(Math.round(itemTime(it) * 10) / 10) : ""}${it.gemURL ? " · Gemini" : ""}</span>
+      ${i > 0 ? `<button type="button" class="seq-del ghost small-btn" title="Kaldır">✕</button>` : ""}
+    </div>`;
+  }).join("");
+}
+els.seqList.addEventListener("click", (e) => {
+  const box = e.target.closest(".seq-item");
+  if (!box || !active) return;
+  const s = isExtra(active) ? active.owner : active;
+  const i = +box.dataset.i;
+  if (e.target.closest(".seq-del")) {
+    const x = s.extras[i - 1];
+    releaseItem(x);
+    s.extras.splice(i - 1, 1);
+    renderSeq();
+    updateRow(s);
+    updateCounts();
+    return;
+  }
+  if (e.target.closest(".seq-pic")) openItem(i === 0 ? s : s.extras[i - 1]);
+});
+els.seqAdd.onclick = async () => {
+  const s = active && !isExtra(active) ? active : active?.owner;
   if (!s) return;
-  setGem(s, null);
-  renderGem(s);
+  if (!video.duration) return setEditorMsg("Önce videoyu seçin.", true);
+  if ((s.extras || []).length >= 2) return setEditorMsg("Bir adım için en fazla 3 fotoğraf (1 + 2 sıra) eklenebilir.", true);
+  const t = Math.round(video.currentTime * 10) / 10;
+  const x = { owner: s, t, crop: s.crop || null, cropTouched: s.cropTouched, ann: [] };
+  s.extras = [...(s.extras || []), x];
+  setEditorMsg("Sıra fotoğrafı ekleniyor…");
+  try { await grabItem(x); setEditorMsg("Sıra fotoğrafı eklendi. Videoyu bir sonraki ana getirip tekrar ekleyebilirsiniz."); }
+  catch (err) { setEditorMsg(err.message, true); }
+  renderSeq();
   updateRow(s);
   updateCounts();
 };
 
-// =============== Gemini: toplu indirme ve yükleme ===============
+// =============== Gemini: ayarlar, toplu indirme ve yükleme ===============
 els.hands.innerHTML = HAND_OPTIONS.map((h) => `<option value="${h.id}">${h.label}</option>`).join("");
 els.hands.value = store.get("uk_hands2") || "young_polish";
 els.hands.onchange = () => store.set("uk_hands2", els.hands.value);
 els.enhance.checked = store.get("uk_enhance") !== "0";
 els.enhance.onchange = async () => {
   store.set("uk_enhance", els.enhance.checked ? "1" : "0");
-  for (const s of steps) if (s.rawBlob) { await renderOut(s); updateRow(s); }
-  if (cover.rawBlob) { await renderOut(cover); renderCover(); }
+  for (const it of [cover, ...steps.flatMap((s) => [s, ...(s.extras || [])]), ...guide]) {
+    if (it.rawBlob) { await renderOut(it); refreshItemUI(it); }
+  }
 };
 
 let jszipP = null;
@@ -753,44 +968,44 @@ function loadJSZip() {
   }));
 }
 
+function masterPrompt() { return buildMasterPrompt({ title: els.pdfTitle.value.trim(), hands: els.hands.value }); }
+els.copyMaster.onclick = () => copyText(masterPrompt(), els.copyMaster);
+
 els.dlZip.onclick = async () => {
-  const list = steps.filter((s) => s.include && s.photo);
-  if (!list.length) return setGemMsg("Fotoğraflı adım yok.", true);
-  const missing = list.filter((s) => !s.outBlob).length;
-  if (missing) {
+  const items = allItems();
+  if (!items.length) return setGemMsg("Fotoğraflı adım yok.", true);
+  if (items.some((it) => !it.outBlob && itemTime(it) != null)) {
     if (!video.duration) return setGemMsg("Önce videoyu seçip kareleri alın.", true);
-    setGemMsg(`Önce ${missing} kare alınıyor…`);
+    setGemMsg("Önce eksik kareler alınıyor…");
     await runBatch(false);
   }
-  if (cover.t != null && !cover.outBlob && video.duration) await grabCover().catch(() => {});
   try {
     setGemMsg("Zip hazırlanıyor…");
     const JSZip = await loadJSZip();
     const zip = new JSZip();
     const nums = stepNumbers();
     const title = els.pdfTitle.value.trim();
-    const lines = [
-      `GEMINI KOMUTLARI — ${title || "tarif"}`,
-      "Her görseli Gemini'ye yükleyin, altındaki komutu yapıştırın ve sonucu indirin.",
-      "Dosya adlarını değiştirmenize gerek yok: uygulama Gemini görsellerini ham karelere bakarak doğru adıma yerleştirir.",
+    zip.file("1-ONCE-BUNU-YAPISTIR.txt", [
+      "GEMINI'DE NASIL YAPILIR",
+      "1) Gemini'de bu tarif için YENİ bir sohbet açın ve aşağıdaki ana komutu bir kez yapıştırıp gönderin.",
+      "2) Sonra görselleri sırayla tek tek yükleyin. Her görselin yanına dosya adının sonundaki kelimeye göre yazın:",
+      "   ...-sonuc.jpg  →  RESULT      ...-teknik.jpg  →  TECHNIQUE      kapak.jpg  →  COVER",
+      "3) Gemini'nin verdiği görselleri indirin ve hepsini birden uygulamaya sürükleyin. Dosya adlarını değiştirmenize gerek yok.",
       "",
-    ];
-    if (cover.outBlob) {
-      zip.file("kapak.jpg", cover.outBlob);
-      lines.push("==================== kapak.jpg ====================", buildCoverPrompt({ title }), "");
+      "==================== ANA KOMUT ====================",
+      masterPrompt(),
+    ].join("\n"));
+    const lines = ["İSTEĞE BAĞLI: Her görsel için ayrı, ayrıntılı komutlar (ana komut yetersiz kalırsa kullanın).", ""];
+    for (const it of items) {
+      if (!it.outBlob) continue;
+      const name = itemFileName(it, nums);
+      zip.file(`${name}.jpg`, it.outBlob);
+      lines.push(`==================== ${name}.jpg ====================`, itemPrompt(it), "");
     }
-    for (const s of list) {
-      if (!s.outBlob) continue;
-      s.fileNo = nums.get(s.id);
-      const name = fileNameFor(s.fileNo);
-      zip.file(`${name}.jpg`, s.outBlob);
-      lines.push(`==================== ${name}.jpg (${s.photoType === "technique" ? "teknik" : "sonuç"}) ====================`,
-        geminiPromptFor(s), "");
-    }
-    zip.file("GEMINI-KOMUTLARI.txt", lines.join("\n"));
+    zip.file("2-TEK-TEK-KOMUTLAR.txt", lines.join("\n"));
     const blob = await zip.generateAsync({ type: "blob" });
     saveBlob(blob, `${(title || "tarif").replace(/[\\/:*?"<>|]+/g, "").slice(0, 60)}-kareler.zip`);
-    setGemMsg("İndirildi. Zip'i açın; GEMINI-KOMUTLARI.txt her görselin komutunu içeriyor.");
+    setGemMsg("İndirildi. Zip'teki 1-ONCE-BUNU-YAPISTIR.txt dosyasını açın.");
   } catch (e) {
     setGemMsg(e.message, true);
   }
@@ -811,32 +1026,23 @@ async function rawDesc(item) {
   return (item._desc ??= await descOf(item.outBlob));
 }
 
-const targetKey = (t) => (t === cover ? "cover" : String(t.id));
-const targetByKey = (k) => (k === "cover" ? cover : stepById(k));
-function targetLabel(t) {
-  if (t === cover) return "Kapak";
-  const n = stepNumbers().get(t.id);
-  return `Adım ${n ?? "?"} — ${t.text.replace(/\s*\[CHECK:[^\]]*\]/gi, "").slice(0, 38)}`;
-}
-
 let review = []; // [{ file, url, target, how }]
+let reviewTargets = [];
 
 async function assignGeminiFiles(files) {
   const nums = stepNumbers();
-  const photoSteps = steps.filter((s) => s.include && s.photo);
-  const byNo = new Map(photoSteps.map((s) => [s.fileNo ?? nums.get(s.id), s]));
+  const targets = allItems();
+  const byKey = new Map(targets.map((t) => [itemKey(t, nums), t]));
   const taken = new Set();
   const result = [];
   const rest = [];
-  // 1) Dosya adında numara varsa (adim-05, kapak) doğrudan
   for (const f of files) {
-    const no = numberFromFileName(f.name);
-    const t = no === 0 ? cover : no != null ? byNo.get(no) : null;
+    const k = keyFromFileName(f.name);
+    const t = k ? byKey.get(k) : null;
     if (t && !taken.has(t)) { taken.add(t); result.push({ file: f, target: t, how: "dosya adı" }); }
     else rest.push(f);
   }
-  // 2) Görüntü benzerliği: Gemini kadrajı koruduğu için her görsel kendi ham karesine en çok benzer
-  const cands = [cover, ...photoSteps].filter((t) => t.outBlob && !taken.has(t));
+  const cands = targets.filter((t) => t.outBlob && !taken.has(t));
   let unmatched = rest;
   if (rest.length && cands.length) {
     try {
@@ -850,39 +1056,43 @@ async function assignGeminiFiles(files) {
       });
     } catch (e) { console.error(e); unmatched = rest; }
   }
-  // 3) Kalanlar: değiştirilme zamanına göre, görseli olmayan adımlara sırayla
   unmatched.sort((x, y) => (x.lastModified || 0) - (y.lastModified || 0));
-  const free = photoSteps.filter((s) => !s.gemURL && !taken.has(s));
+  const free = targets.filter((t) => !t.gemURL && !taken.has(t));
   let leftover = 0;
   for (const f of unmatched) {
     const t = free.shift();
     if (t) { taken.add(t); result.push({ file: f, target: t, how: "sıra" }); } else leftover++;
   }
   for (const r of result) setGem(r.target, r.file);
+  setReview(result, targets);
+  return { placed: result.length, leftover, noRaw: rest.length && !cands.length };
+}
+
+function setReview(result, targets = allItems()) {
   review.forEach((r) => URL.revokeObjectURL(r.url));
   review = result.map((r) => ({ ...r, url: URL.createObjectURL(r.file) }));
+  reviewTargets = targets;
   renderSteps();
+  renderGuide();
   renderCover();
   renderReview();
-  const s = activeStep();
-  if (s) renderGem(s);
-  return { placed: result.length, leftover, noRaw: rest.length && !cands.length };
+  if (active) { renderGem(active); drawAnn(); renderSeq(); }
 }
 
 function renderReview() {
   const box = els.gemReview;
   if (!review.length) { box.hidden = true; box.innerHTML = ""; return; }
-  const targets = [cover, ...steps.filter((s) => s.include && s.photo)];
+  const nums = stepNumbers();
   box.hidden = false;
-  box.innerHTML = `<p class="label">Eşleştirmeyi kontrol edin <span class="muted small">— yanlışsa sağdaki listeden doğru adımı seçin</span></p>` +
+  box.innerHTML = `<p class="label">Eşleştirmeyi kontrol edin <span class="muted small">— yanlışsa sağdaki listeden doğru yeri seçin</span></p>` +
     review.map((r, i) => `
       <div class="rv-row">
         <img class="rv-gem" alt="" src="${r.url}">
         <span class="rv-arrow">→</span>
         ${r.target.outURL ? `<img class="rv-raw" alt="" src="${r.target.outURL}">` : `<span class="rv-raw rv-none">ham kare yok</span>`}
         <div class="rv-pick">
-          <select data-i="${i}">${targets.map((t) => `<option value="${targetKey(t)}" ${t === r.target ? "selected" : ""}>${esc(targetLabel(t))}</option>`).join("")}</select>
-          <span class="muted small">${r.how === "görüntü" ? "görüntüye göre eşleşti" : r.how === "dosya adı" ? "dosya adına göre" : r.how === "otomatik" ? "Gemini API ile düzenlendi" : r.how === "elle" ? "elle seçildi" : "sıraya göre (kontrol edin)"}</span>
+          <select data-i="${i}">${reviewTargets.map((t, j) => `<option value="${j}" ${t === r.target ? "selected" : ""}>${esc(itemLabel(t, nums))}</option>`).join("")}</select>
+          <span class="muted small">${{ "görüntü": "görüntüye göre eşleşti", "dosya adı": "dosya adına göre", "otomatik": "Gemini API ile düzenlendi", "elle": "elle seçildi" }[r.how] || "sıraya göre (kontrol edin)"}</span>
         </div>
       </div>`).join("");
 }
@@ -891,7 +1101,7 @@ els.gemReview.addEventListener("change", (e) => {
   const sel = e.target.closest("select[data-i]");
   if (!sel) return;
   const r = review[+sel.dataset.i];
-  const next = targetByKey(sel.value);
+  const next = reviewTargets[+sel.value];
   if (!next || next === r.target) return;
   const other = review.find((x) => x.target === next);
   const prev = r.target;
@@ -901,10 +1111,10 @@ els.gemReview.addEventListener("change", (e) => {
   r.target = next;
   r.how = "elle";
   renderSteps();
+  renderGuide();
   renderCover();
   renderReview();
-  const s = activeStep();
-  if (s) renderGem(s);
+  if (active) { renderGem(active); drawAnn(); renderSeq(); }
 });
 
 async function handleGemFiles(list) {
@@ -914,7 +1124,7 @@ async function handleGemFiles(list) {
   const r = await assignGeminiFiles(files);
   setGemMsg(`${r.placed} görsel yerleştirildi. Aşağıdaki listeden kontrol edin.` +
     (r.noRaw ? " (Ham kareler alınmadığı için görüntüyle eşleştirme yapılamadı; önce \"Kareleri al\".)" : "") +
-    (r.leftover ? ` ${r.leftover} görsel için boş adım kalmadı.` : ""), !!r.leftover);
+    (r.leftover ? ` ${r.leftover} görsel için boş yer kalmadı.` : ""), !!r.leftover);
 }
 els.gemFiles.addEventListener("change", () => { handleGemFiles(els.gemFiles.files); els.gemFiles.value = ""; });
 ["dragenter", "dragover"].forEach((ev) => els.gemDrop.addEventListener(ev, (e) => { e.preventDefault(); els.gemDrop.classList.add("over"); }));
@@ -945,12 +1155,11 @@ async function aspectOf(blob) {
   b.close?.();
   return r;
 }
-/** Tek bir ögeyi (adım ya da kapak) Gemini'ye düzenletir. */
-async function gemEdit(item, prompt, signal, aspect) {
+async function gemEdit(item, signal) {
   if (!item.outBlob) throw new Error("Ham kare yok.");
   const blob = await editImageWithGemini({
-    apiKey: els.gemKey.value.trim(), model: els.gemModel.value, prompt,
-    blob: item.outBlob, aspect: aspect || await aspectOf(item.outBlob), signal,
+    apiKey: els.gemKey.value.trim(), model: els.gemModel.value, prompt: itemPrompt(item),
+    blob: item.outBlob, aspect: isCover(item) ? "4:3" : await aspectOf(item.outBlob), signal,
   });
   setGem(item, blob);
   return blob;
@@ -958,52 +1167,45 @@ async function gemEdit(item, prompt, signal, aspect) {
 const FATAL = /anahtar|faturalandırma|reddedildi|bağlanılamadı|kota/i;
 
 async function runGeminiBatch(redoAll) {
-  const key = gemKeyOrWarn(setGemAutoMsg);
-  if (!key) return;
-  const photo = steps.filter((s) => s.include && s.photo);
-  if (!photo.length) return setGemAutoMsg("Fotoğraflı adım yok.", true);
-  // Önce eksik ham kareler
-  if (photo.some((s) => !s.outBlob) || (cover.t != null && !cover.outBlob)) {
+  if (!gemKeyOrWarn(setGemAutoMsg)) return;
+  let items = allItems();
+  if (!items.length) return setGemAutoMsg("Fotoğraflı adım yok.", true);
+  if (items.some((it) => !it.outBlob && itemTime(it) != null)) {
     if (!video.duration) return setGemAutoMsg("Önce videoyu seçin; Gemini'ye ham kareler gönderiliyor.", true);
     setGemAutoMsg("Önce eksik kareler alınıyor…");
     await runBatch(false);
-    if (cover.t != null && !cover.outBlob) await grabCover().catch(() => {});
+    items = allItems();
   }
-  const title = els.pdfTitle.value.trim();
-  const jobs = [];
-  if (cover.outBlob && (redoAll || !cover.gemURL)) jobs.push({ item: cover, prompt: buildCoverPrompt({ title }), label: "Kapak" });
-  for (const s of photo) {
-    if (s.outBlob && (redoAll || !s.gemURL)) jobs.push({ item: s, prompt: geminiPromptFor(s), label: `Adım ${stepNumbers().get(s.id) ?? "?"}` });
-  }
+  const nums = stepNumbers();
+  const jobs = items.filter((it) => it.outBlob && (redoAll || !it.gemURL));
   if (!jobs.length) return setGemAutoMsg("Düzenlenecek fotoğraf kalmadı ✓");
   gemAbort = new AbortController();
   els.gemAuto.disabled = els.gemAutoAll.disabled = true;
   els.gemStop.hidden = false;
   const done = [];
   let failed = 0, fatal = null;
-  for (const [i, j] of jobs.entries()) {
+  for (const [i, it] of jobs.entries()) {
     if (gemAbort.signal.aborted) break;
-    setGemAutoMsg(`${i + 1}/${jobs.length} · ${j.label} Gemini'de düzenleniyor… (görsel başına 10–40 sn)`);
-    if (j.item !== cover) { j.item.status = "working"; updateRow(j.item); }
+    const label = itemLabel(it, nums).replace(/ — .*/, "");
+    setGemAutoMsg(`${i + 1}/${jobs.length} · ${label} Gemini'de düzenleniyor… (görsel başına 10–40 sn)`);
+    it.status = "working";
+    refreshItemUI(it);
     try {
-      await gemEdit(j.item, j.prompt, gemAbort.signal, j.item === cover ? "4:3" : undefined);
-      done.push({ file: j.item.gemBlob, target: j.item, how: "otomatik" });
-      if (j.item !== cover) j.item.status = "";
+      await gemEdit(it, gemAbort.signal);
+      done.push({ file: it.gemBlob, target: it, how: "otomatik" });
     } catch (e) {
-      if (j.item !== cover) j.item.status = "";
-      if (e.name === "AbortError") break;
+      if (e.name === "AbortError") { it.status = ""; break; }
       console.error(e);
       failed++;
-      if (FATAL.test(e.message)) { fatal = e.message; break; }
-      setGemAutoMsg(`${j.label}: ${e.message}`, true);
+      if (FATAL.test(e.message)) { fatal = e.message; it.status = ""; refreshItemUI(it); break; }
+      setGemAutoMsg(`${label}: ${e.message}`, true);
       await sleep(800);
     }
-    if (j.item === cover) renderCover(); else { updateRow(j.item); updateCounts(); }
-    if (activeStep() === j.item) renderGem(j.item);
+    it.status = "";
+    refreshItemUI(it);
+    updateCounts();
   }
-  review.forEach((r) => URL.revokeObjectURL(r.url));
-  review = done.map((r) => ({ ...r, url: URL.createObjectURL(r.file) }));
-  renderReview();
+  setReview(done, items);
   els.gemAuto.disabled = els.gemAutoAll.disabled = false;
   els.gemStop.hidden = true;
   const stopped = gemAbort.signal.aborted;
@@ -1018,15 +1220,14 @@ els.gemAutoAll.onclick = () => { if (confirm("Gemini görseli olan fotoğraflar 
 els.gemStop.onclick = () => gemAbort?.abort();
 
 els.gemOne.onclick = async () => {
-  const s = activeStep();
-  if (!s || !gemKeyOrWarn(setEditorMsg)) return;
-  if (!s.outBlob) return setEditorMsg("Önce kare alınmalı.", true);
+  const it = active;
+  if (!it || !gemKeyOrWarn(setEditorMsg)) return;
+  if (!it.outBlob) return setEditorMsg("Önce kare alınmalı.", true);
   els.gemOne.disabled = true;
   setEditorMsg("Gemini'de düzenleniyor… (10–40 sn)");
   try {
-    await gemEdit(s, geminiPromptFor(s));
-    renderGem(s);
-    updateRow(s);
+    await gemEdit(it);
+    refreshItemUI(it);
     updateCounts();
     setEditorMsg("Gemini görseli hazır. Ham kareyle karşılaştırın; beğenmezseniz tekrar basabilirsiniz.");
   } catch (e) { setEditorMsg(e.message, true); }
@@ -1039,7 +1240,7 @@ els.coverAuto.onclick = async () => {
   try {
     if (!cover.outBlob) await grabCover();
     els.coverAuto.textContent = "Düzenleniyor…";
-    await gemEdit(cover, buildCoverPrompt({ title: els.pdfTitle.value.trim() }), undefined, "4:3");
+    await gemEdit(cover);
     renderCover();
     setMsg("Kapak Gemini ile düzenlendi.");
   } catch (e) { setMsg(e.message, true); els.pdfCard.scrollIntoView({ block: "nearest" }); }
@@ -1063,13 +1264,14 @@ function renderCover() {
   els.coverEmpty.textContent = cover.t != null && !url ? "Kareyi alın" : "Kapak yok";
   updateCounts();
 }
+els.coverImg.addEventListener("click", () => openItem(cover));
 els.coverUseCurrent.onclick = () => { els.coverTime.value = formatTime(Math.round(video.currentTime * 10) / 10); };
 els.coverGrab.onclick = async () => {
   try { await grabCover(); setMsg(""); } catch (e) { setMsg(e.message, true); els.pdfCard.scrollIntoView({ block: "nearest" }); }
 };
 els.coverTime.addEventListener("change", () => { const t = parseTime(els.coverTime.value); if (!Number.isNaN(t)) cover.t = t; });
 els.coverDl.onclick = () => cover.outBlob ? saveBlob(cover.outBlob, "kapak.jpg") : setMsg("Önce kapak karesini alın.", true);
-els.coverPrompt.onclick = () => copyText(buildCoverPrompt({ title: els.pdfTitle.value.trim() }), els.coverPrompt);
+els.coverPrompt.onclick = () => copyText(itemPrompt(cover), els.coverPrompt);
 els.coverFile.addEventListener("change", () => {
   const f = els.coverFile.files[0];
   els.coverFile.value = "";
@@ -1079,11 +1281,14 @@ els.coverFile.addEventListener("change", () => {
 });
 
 // =============== PDF ===============
-// PDF boyutunu küçük tutmak için görseller (özellikle Gemini'nin büyük PNG'leri) JPEG'e çevrilip küçültülür.
+// Görseller küçültülüp JPEG'e çevrilir ve ok/daire işaretleri görselin üzerine işlenir.
 const PDF_MAX = 1600;
-const pdfCache = new WeakMap(); // Blob → küçültülmüş JPEG URL
-async function compressForPdf(blob) {
-  if (pdfCache.has(blob)) return pdfCache.get(blob);
+const pdfCache = new WeakMap(); // Blob → Map(işaret anahtarı → URL)
+async function compressForPdf(blob, ann) {
+  const key = JSON.stringify(ann || []);
+  let m = pdfCache.get(blob);
+  if (!m) { m = new Map(); pdfCache.set(blob, m); }
+  if (m.has(key)) return m.get(key);
   const bmp = await createImageBitmap(blob);
   const k = Math.min(1, PDF_MAX / Math.max(bmp.width, bmp.height));
   const c = document.createElement("canvas");
@@ -1093,21 +1298,21 @@ async function compressForPdf(blob) {
   g.fillRect(0, 0, c.width, c.height);
   g.drawImage(bmp, 0, 0, c.width, c.height);
   bmp.close?.();
+  drawAnnotations(g, c.width, c.height, ann);
   const out = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.85));
   const url = URL.createObjectURL(out);
-  pdfCache.set(blob, url);
+  m.set(key, url);
   return url;
 }
 async function preparePdfImages() {
-  const items = [cover, ...steps.filter((s) => s.include && s.photo)];
-  for (const it of items) {
+  for (const it of allItems()) {
     const b = it.gemBlob || it.outBlob;
-    if (b) { try { await compressForPdf(b); } catch (e) { console.error(e); } }
+    if (b) { try { await compressForPdf(b, it.ann); } catch (e) { console.error(e); } }
   }
 }
 function pdfSrc(item) {
   const b = item.gemBlob || item.outBlob;
-  return (b && pdfCache.get(b)) || finalURL(item);
+  return (b && pdfCache.get(b)?.get(JSON.stringify(item.ann || []))) || finalURL(item);
 }
 
 // ---- Kitapçık yardımcıları ----
@@ -1164,7 +1369,6 @@ async function themeFromImage(blob) {
   } catch { return null; }
 }
 function themeVars(hue) {
-  // Sarı-yeşil tonlar beyaz zeminde soluk kalır; okunabilirlik için koyulaştır
   const l = hue > 40 && hue < 170 ? 36 : 44;
   return `--b-accent:hsl(${hue} 58% ${l}%);--b-deep:hsl(${hue} 55% ${l - 14}%);--b-soft:hsl(${hue} 70% 96%);--b-line:hsl(${hue} 30% 88%)`;
 }
@@ -1176,6 +1380,11 @@ function hexToHue(hex) {
   if (!ch) return 20;
   const h = mx === r ? ((g - b) / ch) % 6 : mx === g ? (b - r) / ch + 2 : (r - g) / ch + 4;
   return Math.round((h * 60 + 360) % 360);
+}
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const f = (n) => { const k = (n + h / 30) % 12; const c = l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1)); return Math.round(c * 255).toString(16).padStart(2, "0"); };
+  return `#${f(0)}${f(8)}${f(4)}`;
 }
 
 function buildBooklet(hue = 18) {
@@ -1192,12 +1401,12 @@ function buildBooklet(hue = 18) {
   const coverURL = pdfSrc(cover);
   const kicker = els.pdfKicker.value.trim() || "Crochet Pattern";
 
-  // Kapak rozetleri
   const hookLine = lines(els.pdfTools.value).find((l) => /\d\s*mm/i.test(l));
   const chips = [
     els.pdfSkill.value && `Skill: ${els.pdfSkill.value}`,
     hookLine && `Hook: ${(hookLine.match(/[\d.,]+\s*mm/i) || [hookLine])[0]}`,
     sizes.rows.length > 1 && `${sizes.rows.length} sizes`,
+    guide.some((g) => g.include) && "Stitch guide included",
     "US terms",
   ].filter(Boolean);
 
@@ -1214,6 +1423,21 @@ function buildBooklet(hue = 18) {
   const tips = lines(els.pdfNotes.value);
   const tipsHTML = tips.length ? `<h3 class="b-h3">Good to know</h3><div class="b-tips">${tips.map((t) => `<div class="b-tip"><span>${esc(t)}</span></div>`).join("")}</div>` : "";
 
+  const guideOn = guide.filter((g) => g.include);
+  const guideHTML = guideOn.length ? `
+    <section class="b-guide">
+      <h1 class="b-page-title">Stitch guide</h1>
+      <p class="b-guide-intro">New to crochet? These are the stitches and techniques used in this pattern. Come back to this page whenever you need a reminder.</p>
+      <div class="b-guide-grid">${guideOn.map((g) => {
+        const url = pdfSrc(g);
+        return `<div class="b-gcard">
+          ${url ? `<figure class="b-gphoto"><img alt="" src="${url}"></figure>` : ""}
+          <h3>${esc(g.name)}${g.abbr ? ` <span class="b-gabbr">${esc(g.abbr)}</span>` : ""}</h3>
+          <ol>${g.steps.map((x) => `<li>${esc(strip(x))}</li>`).join("")}</ol>
+        </div>`;
+      }).join("")}</div>
+    </section>` : "";
+
   let lastSec, secNo = 0;
   const stepsHTML = inc.map((s) => {
     let head = "";
@@ -1222,13 +1446,21 @@ function buildBooklet(hue = 18) {
       head = `<div class="b-sec"><span class="b-sec-no">${String(secNo).padStart(2, "0")}</span><h2>${esc(s.section)}</h2></div>`;
     }
     lastSec = s.section;
-    const url = s.photo ? pdfSrc(s) : null;
     const n = nums.get(s.id);
     if (!n) return `${head}<div class="b-note">${clean(s.text)}</div>`;
     const { lbl, body, count } = splitStep(strip(s.text));
     const p = `<p>${lbl ? `<span class="b-lbl">${esc(lbl)}</span> ` : ""}${esc(body)}${count ? ` <span class="b-count">${esc(count)}</span>` : ""}</p>`;
-    const img = url ? `<figure class="b-photo"><img alt="" src="${url}"></figure>` : "";
-    return `${head}<div class="b-step${url ? " has-img" : ""}"><div class="b-num">${n}</div><div class="b-body">${p}${img}</div></div>`;
+    const photos = s.photo ? [s, ...(s.extras || [])].map(pdfSrc).filter(Boolean) : [];
+    let img = "";
+    let cls = "";
+    if (photos.length > 1) {
+      cls = " has-seq";
+      img = `<div class="b-seq b-seq-${photos.length}">${photos.map((u, i) => `<figure class="b-photo"><img alt="" src="${u}"><span class="b-seq-no">${i + 1}</span></figure>`).join("")}</div>`;
+    } else if (photos.length) {
+      cls = " has-img";
+      img = `<figure class="b-photo"><img alt="" src="${photos[0]}"></figure>`;
+    }
+    return `${head}<div class="b-step${cls}"><div class="b-num">${n}</div><div class="b-body">${p}${img}</div></div>`;
   }).join("");
 
   els.booklet.className = `size-${els.pdfSize.value}`;
@@ -1250,6 +1482,7 @@ function buildBooklet(hue = 18) {
       ${cards ? `<div class="b-cards">${cards}</div>` : ""}
       ${sizesHTML}${abbrHTML}${tipsHTML}
     </section>
+    ${guideHTML}
     <section class="b-steps">
       <h1 class="b-steps-title">Instructions</h1>
       ${stepsHTML}
@@ -1259,7 +1492,6 @@ function buildBooklet(hue = 18) {
         ${els.pdfCopyright.value.trim() ? `<p class="b-copy">${esc(els.pdfCopyright.value.trim())}</p>` : ""}
       </div>
     </section>`;
-  // Sayfa üst bilgisi (kapak hariç): tarif adı · mağaza
   let hs = document.getElementById("booklet-page-style");
   if (!hs) { hs = document.createElement("style"); hs.id = "booklet-page-style"; document.head.appendChild(hs); }
   const q = (t) => `"${t.replace(/["\\]/g, "")}"`;
@@ -1273,28 +1505,23 @@ async function bookletHue() {
     const b = cover.gemBlob || cover.outBlob;
     const h = b ? await themeFromImage(b) : null;
     if (h != null) {
-      // Seçiciyi otomatik bulunan renkle güncelle
       els.pdfColor.value = hslToHex(h, 58, h > 40 && h < 170 ? 36 : 44);
       return h;
     }
   }
   return hexToHue(els.pdfColor.value) ?? 18;
 }
-function hslToHex(h, s, l) {
-  s /= 100; l /= 100;
-  const f = (n) => { const k = (n + h / 30) % 12; const c = l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1)); return Math.round(c * 255).toString(16).padStart(2, "0"); };
-  return `#${f(0)}${f(8)}${f(4)}`;
-}
+els.pdfColor.addEventListener("input", () => { els.pdfColor.dataset.auto = "0"; });
 
 els.print.onclick = async () => {
   if (!steps.some((s) => s.include)) return setMsg("PDF'e eklenecek adım yok.", true);
-  const ph = steps.filter((s) => s.include && s.photo);
-  const missing = ph.filter((s) => !finalURL(s)).length;
-  const raw = ph.filter((s) => !s.gemURL && s.outURL).length;
+  const items = allItems();
+  const missing = items.filter((it) => !finalURL(it)).length;
+  const raw = items.filter((it) => !it.gemURL && it.outURL).length;
   const checks = steps.filter((s) => s.include && /\[CHECK/i.test(s.text)).length;
   const warns = [
-    missing && `${missing} adımın fotoğrafı yok.`,
-    raw && `${raw} adımda Gemini görseli yok, ham kare kullanılacak.`,
+    missing && `${missing} görsel eksik.`,
+    raw && `${raw} görselde Gemini hali yok, ham kare kullanılacak.`,
     !finalURL(cover) && "Kapak fotoğrafı yok.",
     checks && `${checks} adımda hâlâ [CHECK] notu var (notlar PDF'e yazılmaz ama içerik kontrol edilmeli).`,
   ].filter(Boolean);
@@ -1304,8 +1531,9 @@ els.print.onclick = async () => {
   setMsg("");
   const imgs = buildBooklet(await bookletHue());
   await Promise.all([...imgs].map((im) => (im.complete ? null : new Promise((r) => { im.onload = im.onerror = r; }))));
+  try { await document.fonts?.ready; } catch { /* yok say */ }
   const oldTitle = document.title;
-  document.title = els.pdfTitle.value.trim() || "pattern"; // PDF dosya adı olarak önerilir
+  document.title = els.pdfTitle.value.trim() || "pattern";
   window.print();
   document.title = oldTitle;
 };
@@ -1316,20 +1544,25 @@ const FIELD_KEYS = ["pdfTitle", "pdfSubtitle", "pdfKicker", "pdfColor", "pdfIntr
 
 els.projectSave.onclick = () => {
   if (!steps.length && !els.transcript.value.trim()) return setMsg("Kaydedilecek bir şey yok.", true);
+  const pick = (it) => ({ crop: it.crop || null, cropTouched: !!it.cropTouched, ann: it.ann || [] });
   const project = {
-    app: "urun-karesi", version: 2, savedAt: new Date().toISOString(),
+    app: "urun-karesi", version: 3, savedAt: new Date().toISOString(),
     videoName: els.videoName.textContent,
     transcript: els.transcript.value,
     frameAt: els.frameAt.value,
     hands: els.hands.value,
     fields: Object.fromEntries(FIELD_KEYS.map((k) => [k, els[k].value])),
-    cover: { t: cover.t, crop: cover.crop },
-    steps: steps.map(({ section, text, kind, start, end, include, photo, photoType, photoDesc, customT, crop, fileNo }) =>
-      ({ section, text, kind, start, end, include, photo, photoType, photoDesc, customT, crop, fileNo })),
+    cover: { t: cover.t, ...pick(cover) },
+    steps: steps.map((s) => ({
+      section: s.section, text: s.text, kind: s.kind, start: s.start, end: s.end, include: s.include, photo: s.photo,
+      photoType: s.photoType, photoDesc: s.photoDesc, customT: s.customT, ...pick(s),
+      extras: (s.extras || []).map((x) => ({ t: x.t, ...pick(x) })),
+    })),
+    guide: guide.map((g) => ({ name: g.name, abbr: g.abbr, steps: g.steps, t: g.t, include: g.include, ...pick(g) })),
   };
   const name = (els.pdfTitle.value.trim() || els.videoName.textContent || "proje").replace(/[\\/:*?"<>|]+/g, "").slice(0, 80);
   saveBlob(new Blob([JSON.stringify(project, null, 2)], { type: "application/json" }), `${name}.json`);
-  setMsg("Proje kaydedildi. Görseller dosyaya girmez: açınca aynı videoyu seçip \"Kareleri al\"a basın ve Gemini görsellerini 3. bölüme yeniden sürükleyin.");
+  setMsg("Proje kaydedildi (metin, zamanlar, kırpmalar ve işaretler). Görseller dosyaya girmez: açınca aynı videoyu seçip \"Kareleri al\"a basın, Gemini görsellerini 3. bölüme sürükleyin.");
 };
 
 els.projectOpen.addEventListener("change", async () => {
@@ -1340,19 +1573,22 @@ els.projectOpen.addEventListener("change", async () => {
     const p = JSON.parse(await f.text());
     if (p.app !== "urun-karesi" || !Array.isArray(p.steps)) throw new Error();
     steps.forEach(releaseStep);
-    setOut(cover, null); setGem(cover, null); cover.rawBlob = null;
+    guide.forEach(releaseItem);
+    releaseItem(cover);
     els.transcript.value = p.transcript || "";
     els.frameAt.value = p.frameAt || "end";
     if (p.hands) els.hands.value = p.hands;
     for (const [k, v] of Object.entries(p.fields || {})) if (els[k]) els[k].value = v ?? "";
-    cover.t = p.cover?.t ?? null;
-    cover.crop = p.cover?.crop ?? null;
-    steps = p.steps.map((s) => ({ photoType: "result", crop: null, ...s, id: nextId++, status: "" }));
+    Object.assign(cover, { t: p.cover?.t ?? null, crop: p.cover?.crop ?? null, cropTouched: !!p.cover?.cropTouched, ann: p.cover?.ann || [] });
+    steps = p.steps.map((s) => ({ photoType: "result", crop: null, ann: [], extras: [], ...s, id: nextId++, status: "" }));
+    steps.forEach(wireExtras);
+    guide = (p.guide || []).map((g) => ({ guide: true, crop: null, ann: [], include: true, ...g, id: `g${nextId++}` }));
     if (steps.length) showWorkCards();
     els.etsyCard.hidden = !(els.etsyTitle.value || els.etsyDesc.value);
     updateEtsyLen();
     closeEditor();
     renderSteps();
+    renderGuide();
     renderCover();
     setMsg(`Proje açıldı: ${steps.length} adım. ` + (video.duration ? "\"Kareleri al\"a basın, " :
       `Videoyu seçin${p.videoName ? ` (${p.videoName})` : ""}, "Kareleri al"a basın, `) + "Gemini görsellerini 3. bölüme sürükleyin.");

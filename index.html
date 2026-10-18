@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,400&family=Nunito+Sans:wght@400;600;700;800&display=swap">
-<link rel="stylesheet" href="style.css?v=20261019d">
+<link rel="stylesheet" href="style.css?v=20261019f">
 </head>
 <body>
 <main>
@@ -99,6 +99,10 @@
       <button id="photo-auto" class="ghost small-btn" type="button">📷 Otomatik seç</button>
     </div>
     <ol id="steps" class="steps"></ol>
+    <div id="guide-box" class="guide-box" hidden>
+      <p class="label">📘 İlmek rehberi <span class="muted small">— yeni başlayanlar için PDF'te ayrı bir sayfa; fotoğrafa dokunup düzenleyin</span></p>
+      <ul id="guide-list" class="guide-list"></ul>
+    </div>
     <div class="actions sticky-actions">
       <button id="extract" class="primary" type="button">Kareleri al</button>
       <button id="extract-all" class="secondary" type="button">Hepsini yeniden al</button>
@@ -111,7 +115,10 @@
   <section class="card" id="editor-card" hidden>
     <div class="result-head">
       <h2><span class="num">✎</span><span id="editor-title">Adım</span></h2>
-      <button id="editor-close" class="ghost small-btn" type="button">Kapat</button>
+      <div class="row-btns">
+        <button id="editor-back" class="ghost small-btn" type="button" hidden>← Ana adıma dön</button>
+        <button id="editor-close" class="ghost small-btn" type="button">Kapat</button>
+      </div>
     </div>
     <p id="editor-text" class="muted small editor-text"></p>
     <div class="time-row">
@@ -146,6 +153,28 @@
         </div>
       </figure>
     </div>
+
+    <div class="ann-box">
+      <p class="label">➚ İşaretler <span class="muted small">— yeni başlayanlara "buraya" demek için ok veya daire çizin; PDF'teki görsele işlenir</span></p>
+      <div class="tools">
+        <div class="seg" role="group" aria-label="Araç">
+          <button id="ann-arrow" class="seg-btn active" type="button">➚ Ok</button>
+          <button id="ann-circle" class="seg-btn" type="button">◯ Daire</button>
+        </div>
+        <label class="inline">Yazı <input id="ann-label" type="text" maxlength="24" placeholder="ör. back loop" list="ann-labels"></label>
+        <datalist id="ann-labels"><option value="insert hook here"><option value="back loop"><option value="front loop"><option value="yarn over"><option value="pull through"><option value="skip"><option value="2 sc here"><option value="join here"><option value="1st stitch"></datalist>
+        <button id="ann-undo" class="ghost small-btn" type="button">Geri al</button>
+        <button id="ann-clear" class="ghost small-btn" type="button">Temizle</button>
+      </div>
+      <div class="stage"><canvas id="ann-canvas"></canvas></div>
+      <p class="muted small">Okun ucunu göstermek istediğiniz yere doğru sürükleyin. Yazı kutusu doluysa çizdiğiniz işaretin yanına eklenir.</p>
+    </div>
+
+    <div class="seq-box" id="seq-box">
+      <p class="label">🎞 Sıra fotoğrafları <span class="muted small">— zor adımlarda 2–3 ardışık kare (ör. tığı sok → ipi al → çek)</span></p>
+      <div id="seq-list" class="seq-list"></div>
+      <button id="seq-add" class="secondary small-btn" type="button">+ Videodaki andan sıra fotoğrafı ekle</button>
+    </div>
   </section>
 
   <!-- 3. Gemini -->
@@ -175,11 +204,12 @@
     <details class="gem-manual">
       <summary class="label">Elle yöntem (Gemini uygulamasında)</summary>
     <ol class="howto muted small">
-      <li><b>Tüm kareleri indir</b>: ham kareler ve her biri için hazır Gemini komutları tek dosyada (zip) iner.</li>
-      <li>Gemini'de her kareyi yükleyip <code>GEMINI-KOMUTLARI.txt</code> içindeki komutunu yapıştırın, sonucu indirin.</li>
+      <li><b>Tüm kareleri indir</b>: ham kareler ve komutlar tek dosyada (zip) iner.</li>
+      <li>Gemini'de bu tarif için yeni bir sohbet açın, <b>ana komutu bir kez</b> yapıştırın. Sonra görselleri tek tek yükleyip yanına dosya adındaki türe göre <code>RESULT</code>, <code>TECHNIQUE</code> ya da <code>COVER</code> yazın.</li>
       <li>Hepsini aşağıdaki alana sürükleyin. <b>Dosya adlarını değiştirmenize gerek yok</b>: uygulama her görseli ham karelere bakarak doğru adıma yerleştirir, siz de altta kontrol edersiniz.</li>
     </ol>
     <div class="actions">
+      <button id="copy-master" class="secondary" type="button">📋 Gemini ana komutunu kopyala</button>
       <button id="dl-zip" class="primary" type="button">⬇ Tüm kareleri ve komutları indir</button>
       <span id="gem-status" class="muted small"></span>
     </div>
@@ -274,6 +304,6 @@
 <!-- Yazdırma çıktısı (yalnızca PDF'te görünür) -->
 <div id="booklet"></div>
 
-<script type="module" src="app.js?v=20261019c"></script>
+<script type="module" src="app.js?v=20261019e"></script>
 </body>
 </html>

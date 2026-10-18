@@ -1,5 +1,5 @@
 // Transkripti Claude API ile satışa hazır İngilizce (US terimli) tarife çevirir.
-import { parseTime, formatTime } from "./processing.js?v=20261019c";
+import { parseTime, formatTime } from "./processing.js?v=20261019e";
 
 export const MODELS = [
   { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (önerilen, hızlı ve ekonomik)" },
@@ -30,6 +30,8 @@ PHOTOS
 - source_time: the transcript timestamp where this step is explained. Format m:ss.
 - photo_type: "result" when the photo shows the outcome of a stage (a finished panel, joined or stuffed piece, finished part); "technique" when it shows hands and hook performing a movement the buyer must copy.
 - photo_desc: 1–2 short English sentences describing what is visible in that photo for an image editor: which part of the project, its shape and structure, which stitches are visible, and what the hands/hook are doing (for technique photos). Mention a color ONLY if the transcript states it; otherwise say "the yarn". Never guess colors.
+- extra_times: ONLY for the few hardest technique steps a beginner could get wrong (e.g. magic ring, working in the back loop, joining, changing color, forming the leaf spiral), give 1–2 additional m:ss moments a few seconds apart so the step can be shown as a short photo sequence together with photo_time (e.g. insert hook → yarn over → pull through). Leave it out for all other steps. At most about 6 steps in the whole pattern.
+- stitch_guide: a beginner "stitch guide" for the basic stitches/techniques this pattern actually uses (max 5, e.g. magic ring, half double crochet, back loop only, slip stitch join, color change). For each: name, US abbreviation, 3–5 short numbered beginner instructions in standard US technique (general technique knowledge is fine here, but never add pattern-specific counts that are not in the transcript), and photo_time: a moment in the video where that stitch is clearly being made (m:ss).
 - cover_time: one moment (m:ss) where the finished item(s) are shown most completely and attractively — often in the first seconds of the video or near the end.
 
 ETSY LISTING
@@ -76,12 +78,25 @@ const SCHEMA = {
                 photo_time: { type: "string" },
                 photo_type: { type: "string", enum: ["result", "technique"] },
                 photo_desc: { type: "string" },
+                extra_times: { type: "array", items: { type: "string" } },
               },
               required: ["text", "source_time", "photo"],
             },
           },
         },
         required: ["heading", "steps"],
+      },
+    },
+    stitch_guide: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string" }, abbr: { type: "string" },
+          steps: { type: "array", items: { type: "string" } },
+          photo_time: { type: "string" },
+        },
+        required: ["name", "steps"],
       },
     },
     cover_time: { type: "string", description: "m:ss where the finished item(s) look best, for the cover photo" },
@@ -177,9 +192,14 @@ export function normalize(p) {
         photo_time: st.photo_time ? String(st.photo_time) : "",
         photo_type: st.photo_type === "technique" ? "technique" : "result",
         photo_desc: st.photo_desc ? String(st.photo_desc).trim() : "",
+        extra_times: Array.isArray(st.extra_times) ? st.extra_times.map(String).filter(Boolean).slice(0, 2) : [],
       })),
     })),
     cover_time: p.cover_time ? String(p.cover_time) : "",
+    stitch_guide: (p.stitch_guide || []).filter((g) => g && g.name).slice(0, 6).map((g) => ({
+      name: String(g.name).trim(), abbr: String(g.abbr || "").trim(),
+      steps: arr(g.steps).map(String).slice(0, 6), photo_time: g.photo_time ? String(g.photo_time) : "",
+    })),
     etsy: {
       listing_title: String(p.etsy?.listing_title || "").slice(0, 140),
       description: String(p.etsy?.description || ""),
@@ -202,6 +222,7 @@ export function patternToSteps(pattern, duration, makeId) {
       id: makeId(), section: sec, text: st.text, kind: "step",
       start: Number.isNaN(start) ? 0 : clamp(start), end: 0,
       include: true, photo: st.photo, photoType: st.photo_type || "result", photoDesc: st.photo_desc || "",
+      extras: (st.extra_times || []).map((x) => parseTime(x)).filter((t) => !Number.isNaN(t)).map((t) => ({ t: clamp(t), crop: null })),
       customT: Number.isNaN(pt) ? null : clamp(pt),
       img: null, status: "",
     };
@@ -239,8 +260,9 @@ const TEMPLATE = {
   notes: ["..."],
   sections: [{
     heading: "Pumpkin Body",
-    steps: [{ text: "Row 1: ... (24 hdc)", source_time: "1:38", photo: true, photo_time: "2:00", photo_type: "result | technique", photo_desc: "Close-up of the stem: a small tube worked in single crochet rounds; a curly spiral leaf hangs from its base; the hook is in the last stitch." }],
+    steps: [{ text: "Row 1: ... (24 hdc)", source_time: "1:38", photo: true, photo_time: "2:00", photo_type: "result | technique", photo_desc: "Close-up of the stem: a small tube worked in single crochet rounds; a curly spiral leaf hangs from its base; the hook is in the last stitch.", extra_times: ["(only for hardest technique steps) 1:41", "1:44"] }],
   }],
+  stitch_guide: [{ name: "Half double crochet", abbr: "hdc", steps: ["Yarn over.", "Insert the hook into the stitch.", "Yarn over and pull up a loop (3 loops on hook).", "Yarn over and pull through all 3 loops."], photo_time: "1:45" }],
   cover_time: "0:03",
   etsy: { listing_title: "...", description: "...", tags: ["13 tags, max 20 chars each"] },
 };
@@ -253,7 +275,7 @@ export function buildChatPrompt({ transcript, videoName, duration }) {
   return `${SYSTEM}
 
 OUTPUT FORMAT
-Reply with ONE JSON object only, inside a single \`\`\`json code block, with no other text before or after it. Do not create an artifact or file. Use exactly these keys (photo_time, photo_type and photo_desc only when photo is true):
+Reply with ONE JSON object only, inside a single \`\`\`json code block, with no other text before or after it. Do not create an artifact or file. Use exactly these keys (photo_time, photo_type, photo_desc only when photo is true; extra_times only for the hardest technique steps):
 ${JSON.stringify(TEMPLATE, null, 2)}
 
 ${header}

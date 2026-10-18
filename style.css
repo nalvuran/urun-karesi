@@ -248,6 +248,30 @@ textarea, select, .field input { font: inherit; color: var(--text); background: 
 .b-end p { margin: 1.5mm auto; max-width: 140mm; }
 .b-copy { margin-top: 6mm !important; font-size: 8pt; color: var(--b-muted); }
 
+
+/* Sıra fotoğrafları ve ilmek rehberi (PDF) */
+.b-step.has-seq .b-body { display: block; }
+.b-seq { display: grid; gap: 3mm; margin-top: 3mm; }
+.b-seq-2 { grid-template-columns: 1fr 1fr; }
+.b-seq-3 { grid-template-columns: 1fr 1fr 1fr; }
+.b-seq .b-photo { margin: 0; position: relative; }
+.b-seq .b-photo img { height: 46mm; max-height: none; }
+.b-seq-2 .b-photo img { height: 58mm; }
+.b-seq-no { position: absolute; left: 2mm; top: 2mm; width: 6mm; height: 6mm; border-radius: 50%; background: var(--b-accent); color: #fff;
+  font: 800 8.5pt/6mm "Nunito Sans", sans-serif; text-align: center; box-shadow: 0 0 0 .6mm #fff; }
+.b-guide { margin: 8mm 0; }
+.b-guide .b-page-title { break-after: avoid; }
+.b-guide-intro { margin: 4mm 0 5mm; color: var(--b-muted); }
+.b-guide-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; }
+.b-gcard { border: .3mm solid var(--b-line); border-radius: 4mm; overflow: hidden; break-inside: avoid; background: #fff; }
+.b-gphoto { margin: 0; background: var(--b-soft); }
+.b-gphoto img { width: 100%; height: 48mm; object-fit: cover; }
+#booklet .b-gcard h3 { font-size: 12.5pt; margin: 3.5mm 4.5mm 1.5mm; }
+.b-gabbr { font: 800 8pt "Nunito Sans", sans-serif; padding: .6mm 2.2mm; border-radius: 3mm; background: var(--b-soft); color: var(--b-deep); vertical-align: middle; }
+.b-gcard ol { margin: 0 4.5mm 4mm 9mm; padding: 0; font-size: 9.5pt; line-height: 1.5; }
+.b-gcard li { margin: .6mm 0; }
+.b-steps { break-before: page; }
+
 /* ---------- API'siz (sohbet) yolu ---------- */
 .tarif-title { margin: 16px 0 0; }
 .btn-link { display: inline-flex; align-items: center; border-radius: 12px; padding: 11px 16px; font-weight: 600;
@@ -305,3 +329,29 @@ textarea, select, .field input { font: inherit; color: var(--text); background: 
 .gem-manual { margin-top: 14px; }
 .gem-manual > summary { cursor: pointer; padding: 6px 0; }
 .gem-manual .howto { margin-top: 8px; }
+
+/* ---------- İşaretler, sıra fotoğrafları, ilmek rehberi (arayüz) ---------- */
+.row-btns { display: flex; gap: 6px; }
+.ann-box, .seq-box { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+#ann-canvas { cursor: crosshair; touch-action: none; }
+.ann-box .tools input[type=text] { width: 150px; padding: 6px 8px; }
+.seq-list { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
+.seq-item { display: grid; gap: 4px; justify-items: start; padding: 6px; border: 1px solid var(--border); border-radius: 10px; }
+.seq-item.on { border-color: var(--accent); background: var(--accent-soft); }
+.seq-pic { position: relative; width: 130px; height: 82px; padding: 0; border-radius: 8px; overflow: hidden; background: var(--field); display: grid; place-items: center; }
+.seq-pic img { width: 100%; height: 100%; object-fit: cover; }
+.seq-no { position: absolute; left: 4px; top: 4px; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; font-size: .72rem; font-weight: 800; display: grid; place-items: center; }
+.seq-del { padding: 2px 8px; }
+.badge.seq { left: auto; right: 3px; bottom: 3px; background: #2f5bb7; color: #fff; }
+.badge.annb { left: auto; right: 3px; top: 3px; bottom: auto; background: #ff4d2e; color: #fff; }
+.guide-box { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.guide-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.guide-row { display: grid; grid-template-columns: auto 1fr auto auto; gap: 10px; align-items: center; padding: 8px; border: 1px solid var(--border); border-radius: 12px; }
+.guide-row.off { opacity: .5; }
+.guide-row .pic { width: 84px; height: 56px; padding: 0; border-radius: 8px; overflow: hidden; background: var(--field); border: 1px dashed var(--border);
+  display: grid; place-items: center; font-size: .75rem; color: var(--muted); position: relative; }
+.guide-row .pic img { width: 100%; height: 100%; object-fit: contain; background: #fff; }
+.guide-row .pic .badge { position: absolute; left: 3px; bottom: 3px; font-size: .62rem; font-weight: 700; padding: 0 4px; border-radius: 5px; }
+.guide-row .ts { padding: 6px 8px; font: 600 .82rem ui-monospace, Menlo, monospace; background: var(--field); border: 1px solid var(--border); }
+.cover-preview img { cursor: pointer; }
+

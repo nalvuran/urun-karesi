@@ -212,3 +212,33 @@ export async function editImageWithGemini({ apiKey, model, prompt, blob, aspect,
   }
   throw lastErr;
 }
+
+// ---- Elle yöntem: tek sohbette bir kez yapıştırılan ana komut ----
+export function buildMasterPrompt({ title, hands }) {
+  const handsRule = hands === "keep" ? HANDS_KEEP : hands === "remove" ? HANDS_REMOVE : handsText(hands);
+  return [
+    `You are my photo editor for a crochet/knitting pattern${title ? ` called "${title}"` : ""}.`,
+    "I will send you photos ONE AT A TIME. With each photo I write one word: RESULT, TECHNIQUE or COVER.",
+    "Edit each photo according to the rules below and reply with the edited image only. Keep the same style, hands and lighting across all photos so the pattern looks consistent.",
+    "",
+    "RULES FOR EVERY PHOTO",
+    `- ${KEEP_ITEM}`,
+    `- ${SHARPEN}`,
+    `- ${QUALITY}`,
+    "",
+    "RESULT = shows how the work looks at this stage",
+    "- Remove clutter (yarn balls, scissors, other objects); clean, seamless, light off-white background; soft, even studio light and a gentle natural shadow.",
+    `- Hands: ${handsRule}`,
+    "",
+    "TECHNIQUE = teaches how the hands, yarn and hook move; the technique must stay 100% accurate",
+    `- Hands: ${hands === "keep" || hands === "remove" ? HANDS_KEEP : handsText(hands)}`,
+    "- Keep the same finger positions, the same path of the yarn over and between the fingers, the same hook position and angle, and the exact place where the hook enters the stitch.",
+    "- Simplify and soften the background (plain, light, uncluttered); soft, bright, even light.",
+    "",
+    "COVER = the cover image for the Etsy listing",
+    "- Remove hands completely and all clutter; finished item(s) on a clean, light off-white background with soft, warm light; balanced, attractive composition; landscape 4:3 with space around the items.",
+    "- Do NOT add any text, letters, logos or watermarks.",
+    "",
+    "Reply \"Ready\" now, then wait for the first photo.",
+  ].join("\n");
+}
