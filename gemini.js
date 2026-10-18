@@ -1,14 +1,20 @@
 // Gemini'ye verilecek görsel düzenleme komutları ve dosya adı yardımcıları.
 
 export const HAND_OPTIONS = [
-  { id: "replace", label: "Değiştir: ojesiz, doğal, bakımlı kadın eli" },
+  { id: "young_polish", label: "Değiştir: genç, bakımlı kadın eli, açık renk ojeli" },
+  { id: "replace", label: "Değiştir: genç, bakımlı kadın eli, ojesiz" },
   { id: "keep", label: "Olduğu gibi bırak (sadece ışık ve fon)" },
   { id: "remove", label: "Kaldır (sadece sonuç fotoğraflarında)" },
 ];
 
-const HANDS_REPLACE =
-  "Replace the hands with natural, well-groomed female hands: short, clean, neatly shaped nails with NO nail polish, " +
-  "no rings or jewelry, natural even skin tone, relaxed and graceful. Keep the hands in exactly the same position and pose.";
+const YOUNG =
+  "IMPORTANT: clearly REPLACE the hands with the hands of a DIFFERENT, YOUNGER woman (mid-20s). The new hands must look visibly " +
+  "different from the original: smooth, youthful, even-toned skin with no visible wrinkles, veins or spots; slim, elegant, " +
+  "slightly longer fingers; soft and graceful. Do not just retouch the original hands — the result must not look like the same person. " +
+  "No rings or jewelry.";
+const HANDS_REPLACE = `${YOUNG} Nails: neatly shaped, clean, medium length, NO nail polish. Keep the same hand pose and grip.`;
+const HANDS_POLISH = `${YOUNG} Nails: neatly shaped, medium length, with a glossy soft nude-pink nail polish. Keep the same hand pose and grip.`;
+const handsText = (h) => (h === "young_polish" ? HANDS_POLISH : HANDS_REPLACE);
 const HANDS_KEEP = "Keep the hands exactly as they are; you may only improve the lighting on them slightly.";
 const HANDS_REMOVE =
   "Remove the hands completely and show the item resting on its own, naturally supported, as if photographed on a table.";
@@ -25,20 +31,20 @@ export function buildGeminiPrompt(o) {
   const ctx = o.title ? `This photo is from a pattern for "${o.title}".` : "This photo is from a crochet/knitting pattern.";
   const step = o.text ? ` It illustrates this step: "${o.text.replace(/\s*\[CHECK:[^\]]*\]/gi, "").trim()}"` : "";
   if (o.type === "technique") {
-    const hands = o.hands === "keep" || o.hands === "remove" ? HANDS_KEEP : HANDS_REPLACE;
+    const hands = o.hands === "keep" || o.hands === "remove" ? HANDS_KEEP : handsText(o.hands);
     return [
       `Edit this photo. ${ctx}${step}`,
       "",
       "It is a TECHNIQUE photo: it teaches the buyer how the hands, yarn and hook move, so the technique must stay 100% accurate.",
       `- ${hands}`,
-      "- Keep EXACTLY the same finger positions, the same path of the yarn over and between the fingers, the same hook position and angle, " +
-        "and the exact place where the hook enters the stitch.",
+      "- While the hands themselves change, keep the same finger positions, the same path of the yarn over and between the fingers, " +
+        "the same hook position and angle, and the exact place where the hook enters the stitch.",
       `- ${KEEP_ITEM}`,
       "- Simplify and soften the background (plain, light, uncluttered) and make the lighting soft, bright and even.",
       `- ${QUALITY}`,
     ].join("\n");
   }
-  const hands = o.hands === "keep" ? HANDS_KEEP : o.hands === "remove" ? HANDS_REMOVE : HANDS_REPLACE;
+  const hands = o.hands === "keep" ? HANDS_KEEP : o.hands === "remove" ? HANDS_REMOVE : handsText(o.hands);
   return [
     `Edit this photo. ${ctx}${step}`,
     "",

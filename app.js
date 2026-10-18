@@ -1,10 +1,10 @@
-import { parseTime, formatTime, autoLevels } from "./processing.js?v=20261018c";
-import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261018c";
+import { parseTime, formatTime, autoLevels } from "./processing.js?v=20261018e";
+import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261018e";
 import {
   MODELS, writePattern, patternToSteps, buildChatPrompt, parseChatReply,
   linesToList, sizesToText, textToSizes, abbrToText, textToAbbr,
-} from "./pattern.js?v=20261018c";
-import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName } from "./gemini.js?v=20261018c";
+} from "./pattern.js?v=20261018e";
+import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName } from "./gemini.js?v=20261018e";
 
 const JSZIP_URL = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
 const FRAME_MAX = 2400; // Ham karenin en fazla uzun kenarı (piksel)
@@ -730,8 +730,8 @@ els.gemRemove.onclick = () => {
 
 // =============== Gemini: toplu indirme ve yükleme ===============
 els.hands.innerHTML = HAND_OPTIONS.map((h) => `<option value="${h.id}">${h.label}</option>`).join("");
-els.hands.value = store.get("uk_hands") || "replace";
-els.hands.onchange = () => store.set("uk_hands", els.hands.value);
+els.hands.value = store.get("uk_hands2") || "young_polish";
+els.hands.onchange = () => store.set("uk_hands2", els.hands.value);
 els.enhance.checked = store.get("uk_enhance") !== "0";
 els.enhance.onchange = async () => {
   store.set("uk_enhance", els.enhance.checked ? "1" : "0");
