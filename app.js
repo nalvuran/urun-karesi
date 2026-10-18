@@ -1,8 +1,8 @@
-import { compose, parseTime, formatTime } from "./processing.js";
-import { parseTranscript, classify, wantsPhoto } from "./transcript.js";
+import { compose, parseTime, formatTime } from "./processing.js?v=20261018b";
+import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261018b";
 import {
   MODELS, writePattern, patternToSteps, buildChatPrompt, parseChatReply, linesToList, sizesToText, textToSizes, abbrToText, textToAbbr,
-} from "./pattern.js";
+} from "./pattern.js?v=20261018b";
 
 // ---- Dış kaynaklar (hepsi tarayıcıda çalışır) ----
 const MP_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1";

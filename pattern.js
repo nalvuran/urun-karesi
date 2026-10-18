@@ -1,5 +1,5 @@
 // Transkripti Claude API ile satışa hazır İngilizce (US terimli) tarife çevirir.
-import { parseTime, formatTime } from "./processing.js";
+import { parseTime, formatTime } from "./processing.js?v=20261018b";
 
 export const MODELS = [
   { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (önerilen, hızlı ve ekonomik)" },
