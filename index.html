@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ürün Karesi</title>
 <meta name="description" content="Örgü videosu ve transkriptinden adım adım ürün fotoğrafları çıkar, elleri sil, PDF tarif kitapçığı hazırla.">
-<link rel="stylesheet" href="style.css?v=20261018g">
+<link rel="stylesheet" href="style.css?v=20261018h">
 </head>
 <body>
 <main>
@@ -136,6 +136,7 @@
         <figcaption>Gemini görseli</figcaption>
         <div class="stage gem-stage" id="gem-stage"><img id="gem-img" alt=""><span id="gem-empty" class="muted small">Henüz yüklenmedi</span></div>
         <div class="actions">
+          <button id="gem-one" class="primary small-btn" type="button">✨ Gemini ile düzenle</button>
           <button id="copy-prompt" class="secondary small-btn" type="button">📋 Gemini komutunu kopyala</button>
           <label class="ghost-btn small-btn">⬆ Gemini görselini yükle<input type="file" id="gem-file" accept="image/*" hidden></label>
           <button id="gem-remove" class="ghost small-btn" type="button" hidden>Kaldır</button>
@@ -147,15 +148,34 @@
   <!-- 3. Gemini -->
   <section class="card" id="gemini-card" hidden>
     <h2><span class="num">3</span>Gemini ile fotoğraflar</h2>
+    <div class="pdf-grid">
+      <label class="field"><span>Eller</span><select id="hands"></select></label>
+      <label class="check"><input id="enhance" type="checkbox" checked> Ham karelerde otomatik ışık düzeltme</label>
+    </div>
+
+    <div class="gem-auto-box">
+      <p class="label">✨ Otomatik (Gemini API)</p>
+      <p class="muted small">Uygulama her kareyi kendi komutuyla Gemini'ye gönderir, sonucu doğru adıma kendisi koyar. Anahtar sadece bu tarayıcıda saklanır. Görsel başına Google'ın API ücreti uygulanır.</p>
+      <div class="pdf-grid">
+        <label class="field"><span>Gemini API anahtarı</span><input id="gem-key" type="password" autocomplete="off" placeholder="AIza..."></label>
+        <label class="field"><span>Model</span><select id="gem-model"></select></label>
+        <label class="check wide"><input id="gem-remember" type="checkbox" checked> Anahtarı bu tarayıcıda hatırla</label>
+      </div>
+      <div class="actions">
+        <button id="gem-auto" class="primary" type="button">✨ Eksik olanları Gemini ile düzenle</button>
+        <button id="gem-auto-all" class="secondary" type="button">Hepsini yeniden düzenle</button>
+        <button id="gem-stop" class="ghost" type="button" hidden>Durdur</button>
+      </div>
+      <p id="gem-auto-msg" class="msg" role="status"></p>
+    </div>
+
+    <details class="gem-manual">
+      <summary class="label">Elle yöntem (Gemini uygulamasında)</summary>
     <ol class="howto muted small">
       <li><b>Tüm kareleri indir</b>: ham kareler ve her biri için hazır Gemini komutları tek dosyada (zip) iner.</li>
       <li>Gemini'de her kareyi yükleyip <code>GEMINI-KOMUTLARI.txt</code> içindeki komutunu yapıştırın, sonucu indirin.</li>
       <li>Hepsini aşağıdaki alana sürükleyin. <b>Dosya adlarını değiştirmenize gerek yok</b>: uygulama her görseli ham karelere bakarak doğru adıma yerleştirir, siz de altta kontrol edersiniz.</li>
     </ol>
-    <div class="pdf-grid">
-      <label class="field"><span>Eller</span><select id="hands"></select></label>
-      <label class="check"><input id="enhance" type="checkbox" checked> Ham karelerde otomatik ışık düzeltme</label>
-    </div>
     <div class="actions">
       <button id="dl-zip" class="primary" type="button">⬇ Tüm kareleri ve komutları indir</button>
       <span id="gem-status" class="muted small"></span>
@@ -166,6 +186,7 @@
       <span><strong>Gemini görsellerini seç</strong> veya buraya sürükle</span>
       <small>Birden fazla dosya seçebilirsiniz.</small>
     </label>
+    </details>
     <p id="gem-msg" class="msg" role="status"></p>
     <div id="gem-review" class="gem-review" hidden></div>
   </section>
@@ -207,6 +228,7 @@
             <button id="cover-grab" class="secondary small-btn" type="button">Kareyi al</button>
           </div>
           <div class="actions">
+            <button id="cover-auto" class="primary small-btn" type="button">✨ Kapağı Gemini ile düzenle</button>
             <button id="cover-dl" class="ghost small-btn" type="button">⬇ Ham kapak karesini indir</button>
             <button id="cover-prompt" class="ghost small-btn" type="button">📋 Kapak için Gemini komutu</button>
             <label class="ghost-btn small-btn">⬆ Gemini kapak görselini yükle<input type="file" id="cover-file" accept="image/*" hidden></label>
@@ -246,6 +268,6 @@
 <!-- Yazdırma çıktısı (yalnızca PDF'te görünür) -->
 <div id="booklet"></div>
 
-<script type="module" src="app.js?v=20261018g"></script>
+<script type="module" src="app.js?v=20261018h"></script>
 </body>
 </html>

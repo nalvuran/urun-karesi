@@ -10,7 +10,8 @@ Uygulama tarayıcıda çalışır; video hiçbir sunucuya yüklenmez. Site: http
    Başlık, giriş, malzemeler, ölçü tablosu, kısaltmalar, notlar, bölümlü adımlar, her fotoğrafın anı ve türü (**sonuç** / **teknik**), kapak anı ve Etsy ilan metni yerleşir.
 3. **Sarı adımları kontrol et:** Claude emin olmadığı yerlere `[CHECK: ...]` notu koyar (PDF'e yazılmaz).
 4. **Kareleri al:** Uygulama her fotoğrafın ham karesini videodan alır. Fotoğrafa dokunup sürükleyerek kırpabilirsin.
-5. **Fotoğraflar (Gemini):** 3. bölümde "Tüm kareleri ve komutları indir" → zip'teki her kareyi Gemini'ye yükle, `GEMINI-KOMUTLARI.txt` içindeki komutunu yapıştır, sonucu indir → hepsini "Gemini görsellerini seç" alanına sürükle.
+5. **Fotoğraflar (Gemini) — otomatik:** 3. bölümde Gemini API anahtarını girip **"✨ Eksik olanları Gemini ile düzenle"**ye bas. Her kare kendi komutuyla Gemini'ye gider, sonuç doğru adıma yerleşir (model: Nano Banana 2.1, isteğe bağlı Pro). Tek fotoğraf için adımı açıp **"✨ Gemini ile düzenle"**, kapak için **"✨ Kapağı Gemini ile düzenle"**. Anahtar sadece tarayıcıda saklanır; görsel başına Google API ücreti uygulanır ve projede faturalandırma açık olmalı.
+   **Elle yöntem:** 3. bölümde "Tüm kareleri ve komutları indir" → zip'teki her kareyi Gemini'ye yükle, `GEMINI-KOMUTLARI.txt` içindeki komutunu yapıştır, sonucu indir → hepsini "Gemini görsellerini seç" alanına sürükle.
    Dosya adında numara varsa (`adim-05.png`, `kapak.png`) o adıma, yoksa indirme sırasına göre yerleşir.
    - **Sonuç** komutu: dağınıklığı kaldırır, açık renk temiz fon, ürüne dokunmaz.
    - **Teknik** komutu: parmak duruşu, ip yolu ve tığ konumu aynen kalır; sadece fon ve ışık düzelir.

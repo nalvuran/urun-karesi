@@ -1,10 +1,10 @@
-import { parseTime, formatTime, autoLevels, thumbDescriptor, descDistance, greedyMatch, DESC_W, DESC_H } from "./processing.js?v=20261018g";
-import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261018g";
+import { parseTime, formatTime, autoLevels, thumbDescriptor, descDistance, greedyMatch, DESC_W, DESC_H } from "./processing.js?v=20261018h";
+import { parseTranscript, classify, wantsPhoto } from "./transcript.js?v=20261018h";
 import {
   MODELS, writePattern, patternToSteps, buildChatPrompt, parseChatReply,
   linesToList, sizesToText, textToSizes, abbrToText, textToAbbr,
-} from "./pattern.js?v=20261018g";
-import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName } from "./gemini.js?v=20261018g";
+} from "./pattern.js?v=20261018h";
+import { HAND_OPTIONS, buildGeminiPrompt, buildCoverPrompt, fileNameFor, numberFromFileName, GEMINI_MODELS, editImageWithGemini, nearestAspect } from "./gemini.js?v=20261018h";
 
 const JSZIP_URL = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
 const FRAME_MAX = 2400; // Ham karenin en fazla uzun kenarı (piksel)
@@ -18,7 +18,7 @@ const els = Object.fromEntries([
   "extract", "extract-all", "cancel", "batch-msg",
   "editor-card", "editor-title", "editor-close", "editor-text", "time", "use-current", "regrab", "photo-type",
   "editor-msg", "crop-canvas", "crop-reset", "dl-raw", "gem-stage", "gem-img", "gem-empty", "copy-prompt", "gem-file", "gem-remove",
-  "gemini-card", "hands", "enhance", "dl-zip", "gem-status", "gem-drop", "gem-files", "gem-msg", "gem-review",
+  "gemini-card", "hands", "enhance", "dl-zip", "gem-status", "gem-drop", "gem-files", "gem-msg", "gem-review", "gem-key", "gem-model", "gem-remember", "gem-auto", "gem-auto-all", "gem-stop", "gem-auto-msg", "gem-one", "cover-auto",
   "pdf-card", "pdf-title", "pdf-intro", "pdf-author", "pdf-size", "print", "booklet",
   "cover-img", "cover-empty", "cover-time", "cover-use-current", "cover-grab", "cover-dl", "cover-prompt", "cover-file",
   "project-save", "project-open", "ai-card", "ai-status", "api-key", "ai-model", "api-remember", "ai-write", "ai-cancel",
@@ -881,7 +881,7 @@ function renderReview() {
         ${r.target.outURL ? `<img class="rv-raw" alt="" src="${r.target.outURL}">` : `<span class="rv-raw rv-none">ham kare yok</span>`}
         <div class="rv-pick">
           <select data-i="${i}">${targets.map((t) => `<option value="${targetKey(t)}" ${t === r.target ? "selected" : ""}>${esc(targetLabel(t))}</option>`).join("")}</select>
-          <span class="muted small">${r.how === "görüntü" ? "görüntüye göre eşleşti" : r.how === "dosya adı" ? "dosya adına göre" : "sıraya göre (kontrol edin)"}</span>
+          <span class="muted small">${r.how === "görüntü" ? "görüntüye göre eşleşti" : r.how === "dosya adı" ? "dosya adına göre" : r.how === "otomatik" ? "Gemini API ile düzenlendi" : r.how === "elle" ? "elle seçildi" : "sıraya göre (kontrol edin)"}</span>
         </div>
       </div>`).join("");
 }
@@ -919,6 +919,131 @@ els.gemFiles.addEventListener("change", () => { handleGemFiles(els.gemFiles.file
 ["dragenter", "dragover"].forEach((ev) => els.gemDrop.addEventListener(ev, (e) => { e.preventDefault(); els.gemDrop.classList.add("over"); }));
 ["dragleave", "drop"].forEach((ev) => els.gemDrop.addEventListener(ev, (e) => { e.preventDefault(); els.gemDrop.classList.remove("over"); }));
 els.gemDrop.addEventListener("drop", (e) => handleGemFiles(e.dataTransfer.files));
+
+// =============== Gemini API ile otomatik düzenleme ===============
+els.gemModel.innerHTML = GEMINI_MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("");
+els.gemKey.value = store.get("uk_gem_key") || "";
+els.gemModel.value = store.get("uk_gem_model") || GEMINI_MODELS[0].id;
+els.gemRemember.checked = store.get("uk_gem_remember") !== "0";
+function saveGemSettings() {
+  store.set("uk_gem_remember", els.gemRemember.checked ? "1" : "0");
+  store.set("uk_gem_key", els.gemRemember.checked && els.gemKey.value.trim() ? els.gemKey.value.trim() : null);
+  store.set("uk_gem_model", els.gemModel.value);
+}
+for (const el of [els.gemKey, els.gemModel, els.gemRemember]) el.addEventListener("change", saveGemSettings);
+
+let gemAbort = null;
+function gemKeyOrWarn(msgFn) {
+  const k = els.gemKey.value.trim();
+  if (!k) { els.gemKey.focus(); msgFn("Önce Gemini API anahtarını girin.", true); }
+  return k;
+}
+async function aspectOf(blob) {
+  const b = await createImageBitmap(blob);
+  const r = nearestAspect(b.width, b.height);
+  b.close?.();
+  return r;
+}
+/** Tek bir ögeyi (adım ya da kapak) Gemini'ye düzenletir. */
+async function gemEdit(item, prompt, signal) {
+  if (!item.outBlob) throw new Error("Ham kare yok.");
+  const blob = await editImageWithGemini({
+    apiKey: els.gemKey.value.trim(), model: els.gemModel.value, prompt,
+    blob: item.outBlob, aspect: await aspectOf(item.outBlob), signal,
+  });
+  setGem(item, blob);
+  return blob;
+}
+const FATAL = /anahtar|faturalandırma|reddedildi|bağlanılamadı|kota/i;
+
+async function runGeminiBatch(redoAll) {
+  const key = gemKeyOrWarn(setGemAutoMsg);
+  if (!key) return;
+  const photo = steps.filter((s) => s.include && s.photo);
+  if (!photo.length) return setGemAutoMsg("Fotoğraflı adım yok.", true);
+  // Önce eksik ham kareler
+  if (photo.some((s) => !s.outBlob) || (cover.t != null && !cover.outBlob)) {
+    if (!video.duration) return setGemAutoMsg("Önce videoyu seçin; Gemini'ye ham kareler gönderiliyor.", true);
+    setGemAutoMsg("Önce eksik kareler alınıyor…");
+    await runBatch(false);
+    if (cover.t != null && !cover.outBlob) await grabCover().catch(() => {});
+  }
+  const title = els.pdfTitle.value.trim();
+  const jobs = [];
+  if (cover.outBlob && (redoAll || !cover.gemURL)) jobs.push({ item: cover, prompt: buildCoverPrompt({ title }), label: "Kapak" });
+  for (const s of photo) {
+    if (s.outBlob && (redoAll || !s.gemURL)) jobs.push({ item: s, prompt: geminiPromptFor(s), label: `Adım ${stepNumbers().get(s.id) ?? "?"}` });
+  }
+  if (!jobs.length) return setGemAutoMsg("Düzenlenecek fotoğraf kalmadı ✓");
+  gemAbort = new AbortController();
+  els.gemAuto.disabled = els.gemAutoAll.disabled = true;
+  els.gemStop.hidden = false;
+  const done = [];
+  let failed = 0, fatal = null;
+  for (const [i, j] of jobs.entries()) {
+    if (gemAbort.signal.aborted) break;
+    setGemAutoMsg(`${i + 1}/${jobs.length} · ${j.label} Gemini'de düzenleniyor… (görsel başına 10–40 sn)`);
+    if (j.item !== cover) { j.item.status = "working"; updateRow(j.item); }
+    try {
+      await gemEdit(j.item, j.prompt, gemAbort.signal);
+      done.push({ file: j.item.gemBlob, target: j.item, how: "otomatik" });
+      if (j.item !== cover) j.item.status = "";
+    } catch (e) {
+      if (j.item !== cover) j.item.status = "";
+      if (e.name === "AbortError") break;
+      console.error(e);
+      failed++;
+      if (FATAL.test(e.message)) { fatal = e.message; break; }
+      setGemAutoMsg(`${j.label}: ${e.message}`, true);
+      await sleep(800);
+    }
+    if (j.item === cover) renderCover(); else { updateRow(j.item); updateCounts(); }
+    if (activeStep() === j.item) renderGem(j.item);
+  }
+  review.forEach((r) => URL.revokeObjectURL(r.url));
+  review = done.map((r) => ({ ...r, url: URL.createObjectURL(r.file) }));
+  renderReview();
+  els.gemAuto.disabled = els.gemAutoAll.disabled = false;
+  els.gemStop.hidden = true;
+  const stopped = gemAbort.signal.aborted;
+  gemAbort = null;
+  if (fatal) return setGemAutoMsg(fatal, true);
+  setGemAutoMsg(stopped ? `Durduruldu. ${done.length} görsel düzenlendi.` :
+    `${done.length} görsel düzenlendi${failed ? `, ${failed} tanesinde hata oldu (tekrar deneyebilirsiniz)` : ""}. ` +
+    "Fotoğraflara dokunup ham kareyle karşılaştırın; teknik fotoğraflarda ip ve tığın yeri değişmemiş olmalı.", !!failed);
+}
+els.gemAuto.onclick = () => runGeminiBatch(false);
+els.gemAutoAll.onclick = () => { if (confirm("Gemini görseli olan fotoğraflar da yeniden düzenlenecek (yeniden ücretlenir). Devam edilsin mi?")) runGeminiBatch(true); };
+els.gemStop.onclick = () => gemAbort?.abort();
+
+els.gemOne.onclick = async () => {
+  const s = activeStep();
+  if (!s || !gemKeyOrWarn(setEditorMsg)) return;
+  if (!s.outBlob) return setEditorMsg("Önce kare alınmalı.", true);
+  els.gemOne.disabled = true;
+  setEditorMsg("Gemini'de düzenleniyor… (10–40 sn)");
+  try {
+    await gemEdit(s, geminiPromptFor(s));
+    renderGem(s);
+    updateRow(s);
+    updateCounts();
+    setEditorMsg("Gemini görseli hazır. Ham kareyle karşılaştırın; beğenmezseniz tekrar basabilirsiniz.");
+  } catch (e) { setEditorMsg(e.message, true); }
+  finally { els.gemOne.disabled = false; }
+};
+
+els.coverAuto.onclick = async () => {
+  if (!gemKeyOrWarn(setMsg)) return;
+  els.coverAuto.disabled = true;
+  try {
+    if (!cover.outBlob) await grabCover();
+    els.coverAuto.textContent = "Düzenleniyor…";
+    await gemEdit(cover, buildCoverPrompt({ title: els.pdfTitle.value.trim() }));
+    renderCover();
+    setMsg("Kapak Gemini ile düzenlendi.");
+  } catch (e) { setMsg(e.message, true); els.pdfCard.scrollIntoView({ block: "nearest" }); }
+  finally { els.coverAuto.disabled = false; els.coverAuto.textContent = "✨ Kapağı Gemini ile düzenle"; }
+};
 
 // =============== Kapak ===============
 async function grabCover() {
@@ -1109,5 +1234,6 @@ async function copyText(text, btn) {
 }
 function setMsg(text, isErr = false) { els.msg.textContent = text; els.msg.className = "msg" + (isErr ? " err" : ""); }
 function setEditorMsg(text, isErr = false) { els.editorMsg.textContent = text; els.editorMsg.className = "msg" + (isErr ? " err" : ""); }
+function setGemAutoMsg(text, isErr = false) { els.gemAutoMsg.textContent = text; els.gemAutoMsg.className = "msg" + (isErr ? " err" : ""); }
 function setGemMsg(text, isErr = false) { els.gemMsg.textContent = text; els.gemMsg.className = "msg" + (isErr ? " err" : ""); }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }

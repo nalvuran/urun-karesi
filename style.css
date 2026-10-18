@@ -264,3 +264,10 @@ textarea, select, .field input { font: inherit; color: var(--text); background: 
   .rv-gem, .rv-raw { width: 100%; height: auto; aspect-ratio: 16 / 10; }
   .rv-pick { grid-column: 1 / -1; }
 }
+
+/* ---------- Gemini API kutusu ---------- */
+.gem-auto-box { margin-top: 14px; padding: 14px; border: 1px solid var(--accent-soft); background: #fffaf7; border-radius: 14px; }
+.gem-auto-box > .label { margin: 0 0 4px; }
+.gem-manual { margin-top: 14px; }
+.gem-manual > summary { cursor: pointer; padding: 6px 0; }
+.gem-manual .howto { margin-top: 8px; }
